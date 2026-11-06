@@ -351,7 +351,7 @@ class Router:
         sid = provider.state_id
         with self._lock, self.store.transaction() as tx:
             now = self.clock()
-            registry = [dict(entry) for entry in tx.get(_learned_key(sid), [])]
+            by_id = {_learned_identity(entry): dict(entry) for entry in tx.get(_learned_key(sid), [])}
             for snapshot in snapshots:
                 quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz)
                 entry = {
@@ -361,11 +361,11 @@ class Router:
                     "model": model_id if snapshot.scope == "model" else None,
                     "amount": snapshot.limit,
                 }
-                same = [e for e in registry if all(e[k] == entry[k] for k in ("per", "unit", "scope", "model"))]
-                for old in same:
-                    registry.remove(old)
-                registry.append(entry)
-            tx[_learned_key(sid)] = registry
+                by_id[_learned_identity(entry)] = entry
+            # Sorted only for stable store bytes; consumers treat the registry as a bag.
+            tx[_learned_key(sid)] = [
+                by_id[identity] for identity in sorted(by_id, key=lambda item: (*item[:3], item[3] or ""))
+            ]
 
     def status(self) -> dict[str, dict[str, float]]:
         """Remaining cooldown seconds per model key and per provider."""
@@ -797,6 +797,11 @@ def _provider_key(sid: str) -> str:
 
 def _learned_key(sid: str) -> str:
     return f"ql:{sid}"
+
+
+def _learned_identity(entry: Mapping[str, Any]) -> tuple[Any, Any, Any, Any]:
+    """Identity of a learned limit row; ``model`` stays ``None`` for provider scope."""
+    return entry["per"], entry["unit"], entry["scope"], entry["model"]
 
 
 def _covered(*groups: Iterable[RateSnapshot]) -> set[tuple[str, str]]:

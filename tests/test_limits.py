@@ -25,7 +25,7 @@ from freeai import (
     rpm,
     tpm,
 )
-from freeai._core import Wait, _rank
+from freeai._core import Wait, _learned_key, _rank
 from freeai.limits import (
     EDGE_MARGIN,
     Cost,
@@ -36,7 +36,7 @@ from freeai.limits import (
     quota_ready_at,
     seconds_until,
 )
-from freeai.state import _like_prefix
+from freeai.state import MemoryStore, _like_prefix
 
 from .conftest import FakeClock, FakeServer, delta, error, ok, sse
 
@@ -382,6 +382,22 @@ def test_limit_metadata_and_globs():
     assert not limit.applies_to("llama")
     assert limit.key("p", "gpt-oss-120b") == "q:p:gpt-oss-120b:day:requests"
     assert Limit(1, "minute", scope="provider").key("p", "x") == "q:p:*:minute:requests"
+
+
+def test_observe_upserts_learned_limits_by_identity(clock):
+    store = MemoryStore()
+    provider = Provider("p", "https://p.example/v1", api_key="k", models=["m1"])
+    ai = make(FakeServer(), clock, provider, store=store)
+    first = [RateSnapshot("minute", "requests", 10, 9), RateSnapshot("day", "tokens", 1000, 900, scope="provider")]
+    second = [RateSnapshot("minute", "requests", 20, 19)]  # same identity, new amount
+    ai._router.observe("p", "m1", first)
+    ai._router.observe("p", "m1", second)
+    with store.transaction() as tx:
+        registry = list(tx[_learned_key(provider.state_id)])
+    assert registry == [
+        {"per": "day", "unit": "tokens", "scope": "provider", "model": None, "amount": 1000},
+        {"per": "minute", "unit": "requests", "scope": "model", "model": "m1", "amount": 20},
+    ]
 
 
 def test_compiled_globs_match_fnmatchcase():
