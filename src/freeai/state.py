@@ -44,10 +44,40 @@ class MemoryStore:
     @contextmanager
     def transaction(self) -> Iterator[MutableMapping[str, Any]]:
         with self._lock:
-            yield self._data
+            # Yield a view so callers can duck-type ``keys_with_prefix`` / ``items_with_prefix``
+            # the same way they do with :class:`_SQLiteView` (a bare dict has neither).
+            yield _MemoryView(self._data)
 
     def close(self) -> None:
         pass
+
+
+class _MemoryView(MutableMapping[str, Any]):
+    """MutableMapping over an in-memory dict, with the same prefix helpers as SQLite."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self._data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def keys_with_prefix(self, prefix: str) -> Iterator[str]:
+        return iter(sorted(key for key in self._data if key.startswith(prefix)))
+
+    def items_with_prefix(self, prefix: str) -> Iterator[tuple[str, Any]]:
+        return iter((key, self._data[key]) for key in self.keys_with_prefix(prefix))
 
 
 class SQLiteStore:
