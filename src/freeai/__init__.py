@@ -2,6 +2,7 @@
 
 from .aio import AsyncFreeAI
 from .client import DEFAULT_EXCLUDE, FreeAI, chat, stream
+from .cooldown import CooldownPolicy
 from .errors import (
     BillingWarning,
     ExhaustedError,
@@ -12,7 +13,7 @@ from .errors import (
     Scope,
     StreamInterrupted,
 )
-from .limits import CooldownPolicy, Cost, Limit, RateSnapshot, per_month, rpd, rph, rpm, tpd, tph, tpm
+from .limits import Cost, Limit, RateSnapshot, per_month, rpd, rph, rpm, tpd, tph, tpm
 from .providers import (
     NVIDIA,
     OVH,
