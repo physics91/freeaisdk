@@ -20,10 +20,8 @@ from .._http import (
     AsyncClient,
     Client,
     Headers,
-    HTTPError,
     error_object,
     error_text,
-    logger,
     retry_hint,
     seconds_until_midnight,
 )
@@ -48,6 +46,7 @@ from ._classify import (
     _effective_status,
     _message,
 )
+from ._quota_mixin import QuotaMixin
 from ._ratelimit import rate_snapshots_from_headers
 from ._request_mixin import Completion as Completion
 from ._request_mixin import RequestMixin
@@ -59,7 +58,7 @@ Tier = Literal["free", "trial", "paid", "unknown"]
 Verdict = tuple[FailureKind, Scope | None]
 
 
-class Provider(CatalogMixin, TransportMixin, RequestMixin):
+class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
     """Any OpenAI-compatible ``/chat/completions`` endpoint.
 
     Pass ``models`` to pin the model list; otherwise ``GET {base_url}/models`` is used, which lists
@@ -185,40 +184,7 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin):
         response.raise_for_status()
         return response.json()
 
-    # -- quota -----------------------------------------------------------------------------
-
-    def quota_may_fetch(self) -> bool:
-        """True when :meth:`refresh_quota` may perform network I/O."""
-        return self._quota_path() is not None
-
-    def refresh_quota(self) -> list[RateSnapshot]:
-        """Read server-side quota counters, if the platform exposes them. Never raises."""
-        path = self._quota_path()
-        if path is None:
-            return []
-        try:
-            return self._parse_quota(self._get_json(path))
-        except (HTTPError, ValueError, KeyError, TypeError) as exc:
-            return self._quota_unavailable(exc)
-
-    async def arefresh_quota(self) -> list[RateSnapshot]:
-        path = self._quota_path()
-        if path is None:
-            return []
-        try:
-            return self._parse_quota(await self._aget_json(path))
-        except (HTTPError, ValueError, KeyError, TypeError) as exc:
-            return self._quota_unavailable(exc)
-
-    def _quota_unavailable(self, exc: Exception) -> list[RateSnapshot]:
-        logger.info("%s: could not read the quota: %s", self.name, exc)
-        return []
-
-    def _quota_path(self) -> str | None:
-        return None
-
-    def _parse_quota(self, body: Any) -> list[RateSnapshot]:
-        return []
+    # -- quota fetch: QuotaMixin; header snapshots stay here (used by classify / chat I/O) --
 
     def rate_snapshots(self, headers: Mapping[str, str]) -> list[RateSnapshot]:
         """Limit state from ``x-ratelimit-{limit,remaining,reset}-{requests,tokens}[-window]`` headers."""
