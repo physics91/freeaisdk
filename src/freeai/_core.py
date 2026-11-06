@@ -439,7 +439,7 @@ class Router:
         """Pick the first candidate that is ready now and charge its quota windows.
 
         Returns the model (or None), when it was or will be ready, and the reservation to hand to
-        :meth:`admitted` or :meth:`release`.
+        :meth:`Plan.admitted` or :meth:`release`.
         """
         with self._lock, self.store.transaction() as tx:
             now = self.clock()
@@ -492,24 +492,25 @@ class Router:
         if self.on_change is not None:
             self.on_change()
 
-    def admitted(self, reservation: Reservation) -> None:
-        """The platform accepted a request, so its own counters now include these charges."""
+    def _release_slot(self, model: ModelInfo) -> None:
+        """Free concurrency/probe bookkeeping only. Caller owns any ``pending_drop``."""
+        provider = self._by_name[model.provider]
+        sid = provider.state_id
+        with self._lock:
+            count = self._inflight.get(provider.name, 0)
+            if count > 0:
+                self._inflight[provider.name] = count - 1
+            self._probing.difference_update({_model_key(sid, model.id), _provider_key(sid)})
+
+    def _drop_pending(self, reservation: Reservation) -> None:
         if reservation.keys:
             with self._lock, self.store.transaction() as tx:
                 pending_drop(tx, reservation.id, reservation.keys)
 
     def release(self, model: ModelInfo, reservation: Reservation = _NO_RESERVATION) -> None:
-        """Free the concurrency slot, probe flags and any reservation :meth:`admitted` did not take."""
-        provider = self._by_name[model.provider]
-        sid = provider.state_id
-        with self._lock:
-            if reservation.keys:
-                with self.store.transaction() as tx:
-                    pending_drop(tx, reservation.id, reservation.keys)
-            count = self._inflight.get(provider.name, 0)
-            if count > 0:
-                self._inflight[provider.name] = count - 1
-            self._probing.difference_update({_model_key(sid, model.id), _provider_key(sid)})
+        """Free the concurrency slot, probe flags and any reservation :meth:`Plan.admitted` did not take."""
+        self._release_slot(model)
+        self._drop_pending(reservation)
 
     # -- response parsing ------------------------------------------------------------------
 
@@ -618,15 +619,19 @@ class Plan:
 
     def release(self, model: ModelInfo) -> None:
         """The attempt ended without an outcome (e.g. the caller stopped reading or was cancelled)."""
-        if self._release(model):
-            self.router.changed()
+        detached, reservation = self._detach(model)
+        if not detached:
+            return
+        self.router._drop_pending(reservation)
+        self.router.changed()
 
-    def _release(self, model: ModelInfo) -> bool:
+    def _detach(self, model: ModelInfo) -> tuple[bool, Reservation]:
+        """Clear the active attempt and concurrency slot; return any reservation still to drop."""
         if self._active is None or self._active.key != model.key:
-            return False
+            return False, _NO_RESERVATION
         reservation, self._active, self._reservation = self._reservation, None, _NO_RESERVATION
-        self.router.release(model, reservation)
-        return True
+        self.router._release_slot(model)
+        return True, reservation
 
     def failed(
         self,
@@ -642,32 +647,43 @@ class Plan:
         ``usage`` is the response's token usage when the server answered (empty, rejected or
         truncated output); those tokens were spent, so they are settled instead of refunded.
         """
-        self._release(model)
+        _, reservation = self._detach(model)
         router = self.router
         provider = router.provider(model)
         sid = provider.state_id
         covered = _covered(failure.snapshots, snapshots, self._admitted)
-        with router._lock, router.store.transaction() as tx:
-            now = router.clock()
-            if failure.scope is Scope.PROVIDER:
-                cooldown = cooldown_fail(tx, _provider_key(sid), failure.kind, failure.retry_after, now, router.policy)
-            elif failure.scope is Scope.MODEL:
-                cooldown = cooldown_fail(
-                    tx, _model_key(sid, model.id), failure.kind, failure.retry_after, now, router.policy
-                )
-            else:
-                cooldown = 0.0
-            # Refused requests consume no tokens: give the estimate back (requests stay charged).
-            used = _total_tokens(usage)
-            delta = (used if used is not None else 0.0) - router.cost(provider, self.request).tokens
-            limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
-            quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
-            router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots])
-            if failure.scope is not Scope.REQUEST:
-                router.health.record(model.key, False, now - started)
-            if failure.kind is FailureKind.UNAVAILABLE and router.retry_budget is not None:
-                router.retry_budget.on_failure()
-                self._budget_spent = not router.retry_budget.allows_retry()
+        committed = False
+        try:
+            with router._lock, router.store.transaction() as tx:
+                if reservation.keys:
+                    pending_drop(tx, reservation.id, reservation.keys)
+                now = router.clock()
+                if failure.scope is Scope.PROVIDER:
+                    cooldown = cooldown_fail(
+                        tx, _provider_key(sid), failure.kind, failure.retry_after, now, router.policy
+                    )
+                elif failure.scope is Scope.MODEL:
+                    cooldown = cooldown_fail(
+                        tx, _model_key(sid, model.id), failure.kind, failure.retry_after, now, router.policy
+                    )
+                else:
+                    cooldown = 0.0
+                # Refused requests consume no tokens: give the estimate back (requests stay charged).
+                used = _total_tokens(usage)
+                delta = (used if used is not None else 0.0) - router.cost(provider, self.request).tokens
+                limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
+                quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+                router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots])
+                if failure.scope is not Scope.REQUEST:
+                    router.health.record(model.key, False, now - started)
+                if failure.kind is FailureKind.UNAVAILABLE and router.retry_budget is not None:
+                    router.retry_budget.on_failure()
+                    self._budget_spent = not router.retry_budget.allows_retry()
+            committed = True
+        except BaseException:
+            if reservation.keys and not committed:
+                router._drop_pending(reservation)
+            raise
         router.changed()
         if failure.kind is FailureKind.MODEL_GONE:
             provider.invalidate()
@@ -702,29 +718,40 @@ class Plan:
         usage: Mapping[str, Any] | None = None,
         served_model: str | None = None,
     ) -> None:
-        self._release(model)
+        _, reservation = self._detach(model)
         router = self.router
         provider = router.provider(model)
         sid = provider.state_id
         snapshots = list(snapshots)
         covered = _covered(snapshots, self._admitted)
-        with router._lock, router.store.transaction() as tx:
-            now = router.clock()
-            for key in (_model_key(sid, model.id), _provider_key(sid)):
-                if key in tx and float(tx[key]["until"]) <= now:
-                    del tx[key]  # recovered: reset the backoff (never cut a cooldown set meanwhile)
-            used = _total_tokens(usage)
-            if used is not None:
-                limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
-                delta = used - router.cost(provider, self.request).tokens
-                quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
-            router._observe_tx(tx, provider.name, model.id, snapshots)
-            latency = now - started
-            router.health.record(model.key, True, latency)
-            if model.is_router and served_model and served_model != model.id:
-                router.health.record(f"{model.provider}:{served_model}", True, latency)  # credit the real model
-            if router.retry_budget is not None:
-                router.retry_budget.on_success()
+        committed = False
+        try:
+            with router._lock, router.store.transaction() as tx:
+                if reservation.keys:
+                    pending_drop(tx, reservation.id, reservation.keys)
+                now = router.clock()
+                for key in (_model_key(sid, model.id), _provider_key(sid)):
+                    if key in tx and float(tx[key]["until"]) <= now:
+                        del tx[key]  # recovered: reset the backoff (never cut a cooldown set meanwhile)
+                used = _total_tokens(usage)
+                if used is not None:
+                    limits = [
+                        lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered
+                    ]
+                    delta = used - router.cost(provider, self.request).tokens
+                    quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+                router._observe_tx(tx, provider.name, model.id, snapshots)
+                latency = now - started
+                router.health.record(model.key, True, latency)
+                if model.is_router and served_model and served_model != model.id:
+                    router.health.record(f"{model.provider}:{served_model}", True, latency)  # credit the real model
+                if router.retry_budget is not None:
+                    router.retry_budget.on_success()
+            committed = True
+        except BaseException:
+            if reservation.keys and not committed:
+                router._drop_pending(reservation)
+            raise
         router.changed()
         self._emit(
             Attempt(
