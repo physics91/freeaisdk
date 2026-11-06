@@ -7,15 +7,14 @@ clients are thin shells that perform the network calls this module asks for.
 
 from __future__ import annotations
 
-import math
 import random
-import secrets
 import threading
 import time
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal, TypedDict
 
+from ._admission import Admission
 from ._messages import (
     Messages,
     _estimate_tokens,
@@ -33,13 +32,11 @@ from ._routing_types import (
     Request,
     Reservation,
     Wait,
-    _cooldown_bundle,
     _learned_identity,
     _learned_key,
-    _model_key,
     _provider_key,
 )
-from .cooldown import CooldownPolicy, cooldown_failures, cooldown_ready_at
+from .cooldown import CooldownPolicy, cooldown_ready_at
 from .errors import (
     BillingWarning,
     ExhaustedError,
@@ -52,11 +49,7 @@ from .limits import (
     Limit,
     RateSnapshot,
     State,
-    pending_add,
-    pending_drop,
-    quota_charge,
     quota_observe,
-    quota_ready_at,
 )
 from .providers import Provider
 from .retry import RetryBudget
@@ -80,10 +73,6 @@ __all__ = [
     "to_response",
 ]
 
-# A reservation counts on top of header readings until the platform accepts the request. It must
-# outlive the wait for response headers (bounded by the read timeout) or a live request's charge
-# would be wiped; if a process dies, its reservations over-count for at most this long.
-_PENDING_TTL = 300.0
 ResponseCheck = Callable[[ChatResponse], bool | str | None]
 
 # Model families that are listed by providers but cannot hold a conversation.
@@ -113,7 +102,6 @@ _CAPABILITY_PARAMS = ("tools", "tool_choice", "response_format", "reasoning")
 _RESERVED_PARAMS = {"messages", "stream", "models"}
 # Only choices[0] is read, so extra choices would just burn quota (and Groq/Cerebras reject n != 1).
 _STRIPPED_PARAMS = {"n"}
-_SLOT_POLL = 0.25  # re-check interval while a provider's concurrency slots or a probe are busy
 
 
 class RouterOptions(TypedDict, total=False):
@@ -221,6 +209,15 @@ class Router:
         self._warmed: set[str] = set()
         self._probing: set[str] = set()
         self._inflight: dict[str, int] = {}
+        self._admission = Admission(
+            lock=self._lock,
+            store=self.store,
+            by_name=self._by_name,
+            inflight=self._inflight,
+            probing=self._probing,
+            clock=self.clock,
+            cost=self.cost,
+        )
         for provider in self.providers:
             if provider.tier in ("trial", "paid"):
                 warnings.warn(
@@ -388,57 +385,7 @@ class Router:
         Returns the model (or None), when it was or will be ready, and the reservation to hand to
         :meth:`Plan.admitted` or :meth:`release`.
         """
-        with self._lock, self.store.transaction() as tx:
-            now = self.clock()
-            earliest = math.inf
-            learned_by_sid: dict[str, list[Any]] = {}
-            cooldown_by_sid: dict[str, tuple[Any, dict[str, Any], bool]] = {}
-            for model in candidates:
-                provider = self._by_name[model.provider]
-                sid = provider.state_id
-                model_key, provider_key = _model_key(sid, model.id), _provider_key(sid)
-                if sid not in cooldown_by_sid:
-                    cooldown_by_sid[sid] = _cooldown_bundle(tx, sid)
-                provider_entry, model_entries, authoritative = cooldown_by_sid[sid]
-                if authoritative:
-                    model_entry = model_entries.get(model.id)
-                    model_ready = float(model_entry["until"]) if model_entry else 0.0
-                    model_failures = int(model_entry["failures"]) if model_entry else 0
-                else:
-                    model_ready = cooldown_ready_at(tx, model_key)
-                    model_failures = cooldown_failures(tx, model_key)
-                provider_ready = float(provider_entry["until"]) if provider_entry else 0.0
-                provider_failures = int(provider_entry["failures"]) if provider_entry else 0
-                ready = max(model_ready, provider_ready)
-                if sid not in learned_by_sid:
-                    learned_by_sid[sid] = list(tx.get(_learned_key(sid), []))
-                limits = self._limits(tx, provider, model.id, learned=learned_by_sid[sid])
-                cost = self.cost(provider, request)
-                if ready <= now:
-                    ready = quota_ready_at(tx, limits, sid, model.id, cost, now, provider.reset_tz)
-                probes = [
-                    key
-                    for key, fails in ((model_key, model_failures), (provider_key, provider_failures))
-                    if fails > 0
-                ]
-                if ready <= now and (self._slots_full(provider) or self._probing.intersection(probes)):
-                    ready = now + _SLOT_POLL
-                if ready <= now:
-                    quota_charge(tx, limits, sid, model.id, cost, now, provider.reset_tz)
-                    charges = [(lim.key(sid, model.id), cost.of(lim.unit)) for lim in limits if cost.of(lim.unit) > 0]
-                    reservation = _NO_RESERVATION
-                    if charges:
-                        reservation = Reservation(secrets.token_hex(8), tuple(key for key, _ in charges))
-                        ttl = max(_PENDING_TTL, 2 * provider.timeout)
-                        pending_add(tx, reservation.id, charges, now + ttl)
-                    self._inflight[provider.name] = self._inflight.get(provider.name, 0) + 1
-                    self._probing.update(probes)  # half-open: one trial request after a cooldown
-                    return model, now, reservation
-                earliest = min(earliest, ready)
-            return None, earliest, _NO_RESERVATION
-
-    def _slots_full(self, provider: Provider) -> bool:
-        return provider.max_concurrency is not None and self._inflight.get(provider.name, 0) >= provider.max_concurrency
+        return self._admission.reserve(candidates, request)
 
     def _limits(
         self,
@@ -448,24 +395,8 @@ class Router:
         *,
         learned: Sequence[Mapping[str, Any]] | None = None,
     ) -> list[Limit]:
-        """Declared limits plus those learned from response headers or quota endpoints.
-
-        ``learned`` may be preloaded for the provider ``state_id`` within one transaction so
-        :meth:`reserve` does not re-read the registry for every candidate.
-        """
-        sid = provider.state_id
-        limits = [limit for limit in provider.limits if limit.applies_to(model_id)]
-        keys = {limit.key(sid, model_id) for limit in limits}
-        entries = learned if learned is not None else tx.get(_learned_key(sid), [])
-        for entry in entries:
-            if entry["model"] not in (None, model_id):
-                continue
-            observed = Limit(float(entry["amount"]), entry["per"], entry["unit"], entry["scope"], source="observed")
-            key = observed.key(sid, model_id)
-            if key not in keys:
-                limits.append(observed)
-                keys.add(key)
-        return limits
+        """Declared limits plus those learned from response headers or quota endpoints."""
+        return self._admission.limits(tx, provider, model_id, learned=learned)
 
     def changed(self) -> None:
         if self.on_change is not None:
@@ -473,23 +404,14 @@ class Router:
 
     def _release_slot(self, model: ModelInfo) -> None:
         """Free concurrency/probe bookkeeping only. Caller owns any ``pending_drop``."""
-        provider = self._by_name[model.provider]
-        sid = provider.state_id
-        with self._lock:
-            count = self._inflight.get(provider.name, 0)
-            if count > 0:
-                self._inflight[provider.name] = count - 1
-            self._probing.difference_update({_model_key(sid, model.id), _provider_key(sid)})
+        self._admission.release_slot(model)
 
     def _drop_pending(self, reservation: Reservation) -> None:
-        if reservation.keys:
-            with self._lock, self.store.transaction() as tx:
-                pending_drop(tx, reservation.id, reservation.keys)
+        self._admission.drop_pending(reservation)
 
     def release(self, model: ModelInfo, reservation: Reservation = _NO_RESERVATION) -> None:
         """Free the concurrency slot, probe flags and any reservation :meth:`Plan.admitted` did not take."""
-        self._release_slot(model)
-        self._drop_pending(reservation)
+        self._admission.release(model, reservation)
 
     # -- response parsing ------------------------------------------------------------------
 
