@@ -448,6 +448,10 @@ class Provider:
 
     # -- quota -----------------------------------------------------------------------------
 
+    def quota_may_fetch(self) -> bool:
+        """True when :meth:`refresh_quota` may perform network I/O."""
+        return self._quota_path() is not None
+
     def refresh_quota(self) -> list[RateSnapshot]:
         """Read server-side quota counters, if the platform exposes them. Never raises."""
         path = self._quota_path()

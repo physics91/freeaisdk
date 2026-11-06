@@ -204,9 +204,19 @@ class AsyncFreeAI(_ClientBase):
         router = self._router
         ordered = router.order(request, await self._pools(), turn=router.next_turn())
         plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
-        for provider in router.claim_warmups(plan.providers):
-            router.observe(provider.name, "*", await provider.arefresh_quota())
+        await self._observe_warmups(router.claim_warmups(plan.providers))
         return plan
+
+    async def _observe_warmups(self, warmups: Sequence[Provider]) -> None:
+        """Fetch each provider's quota once; parallelize only when several may hit the network."""
+        router = self._router
+        if len(warmups) <= 1 or not any(provider.quota_may_fetch() for provider in warmups):
+            for provider in warmups:
+                router.observe(provider.name, "*", await provider.arefresh_quota())
+            return
+        snapshots = await asyncio.gather(*(provider.arefresh_quota() for provider in warmups))
+        for provider, snaps in zip(warmups, snapshots, strict=True):
+            router.observe(provider.name, "*", snaps)
 
     async def _stream(
         self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None

@@ -75,3 +75,28 @@ def test_sync_pools_fetches_cold_catalogs_in_parallel():
     elapsed = time.perf_counter() - started
     assert set(pools) == {"a", "b"}
     assert elapsed < delay * 1.7  # wall clock ~max(delay), not the sequential sum
+
+
+def test_sync_warmups_refresh_quota_in_parallel():
+    delay = 0.15
+    from freeai.limits import RateSnapshot
+
+    class SlowQuota(Provider):
+        def __init__(self, name: str) -> None:
+            super().__init__(
+                name, "https://example.test", api_key="k", models=[ModelInfo(name, "m")], keyless=False
+            )
+
+        def _quota_path(self) -> str | None:
+            return "/quota"
+
+        def refresh_quota(self):
+            time.sleep(delay)
+            return [RateSnapshot("day", "requests", 10, 9, "provider")]
+
+    ai = FreeAI([SlowQuota("a"), SlowQuota("b")], max_wait=0.0)
+    warmups = ai._router.claim_warmups({"a", "b"})
+    started = time.perf_counter()
+    ai._observe_warmups(warmups)
+    elapsed = time.perf_counter() - started
+    assert elapsed < delay * 1.7
