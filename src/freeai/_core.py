@@ -40,7 +40,6 @@ from .limits import (
     cooldown_fail,
     cooldown_failures,
     cooldown_ready_at,
-    cooldown_snapshot,
     pending_add,
     pending_drop,
     quota_adjust,
@@ -373,13 +372,27 @@ class Router:
         providers: dict[str, float] = {}
         with self.store.transaction() as tx:
             now = self.clock()
-            for provider in self.providers:
-                sid = provider.state_id
+            by_sid = {provider.state_id: provider.name for provider in self.providers}
+            for sid, name in by_sid.items():
                 remaining = cooldown_ready_at(tx, _provider_key(sid)) - now
                 if remaining > 0:
-                    providers[provider.name] = remaining
-                for model_id, left in cooldown_snapshot(tx, _model_prefix(sid), now).items():
-                    models[f"{provider.name}:{model_id}"] = left
+                    providers[name] = remaining
+            # One ``cd:m:`` scan for every provider instead of N prefix snapshots.
+            items_with_prefix = getattr(tx, "items_with_prefix", None)
+            if callable(items_with_prefix):
+                model_entries = items_with_prefix("cd:m:")
+            else:
+                model_entries = ((key, tx[key]) for key in list(tx) if key.startswith("cd:m:"))
+            for key, entry in model_entries:
+                left = float(entry["until"]) - now
+                if left <= 0:
+                    continue
+                sid, sep, model_id = key.removeprefix("cd:m:").partition("|")
+                if not sep:
+                    continue
+                name = by_sid.get(sid)
+                if name is not None:
+                    models[f"{name}:{model_id}"] = left
         return {"models": models, "providers": providers}
 
     def health_snapshot(self) -> dict[str, dict[str, float]]:
@@ -785,6 +798,7 @@ def empty_stream(model: ModelInfo) -> ProviderFailure:
 
 
 def _model_key(sid: str, model_id: str) -> str:
+    """Cooldown key for one model. ``sid`` must not contain ``|`` (names use ``#`` for key digests)."""
     return f"cd:m:{sid}|{model_id}"
 
 

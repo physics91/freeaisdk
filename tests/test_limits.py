@@ -433,6 +433,20 @@ def test_compiled_globs_match_fnmatchcase():
         assert _rank(model, []) == 0
 
 
+def test_status_single_pass_reads_models_for_all_providers(clock):
+    store = MemoryStore()
+    first = make(FakeServer(), clock, make_provider(FakeServer(), name="a", models=["m1"]), store=store)
+    second = make(FakeServer(), clock, make_provider(FakeServer(), name="b", models=["m2"]), store=store)
+    with store.transaction() as tx:
+        tx[f"cd:m:{first.providers[0].state_id}|m1"] = {"until": clock.now + 10, "failures": 1}
+        tx[f"cd:m:{second.providers[0].state_id}|m2"] = {"until": clock.now + 20, "failures": 1}
+        tx[f"cd:p:{first.providers[0].state_id}"] = {"until": clock.now + 5, "failures": 1}
+    combined = FreeAI(
+        [first.providers[0], second.providers[0]], clock=clock, sleep=clock.sleep, store=store, max_wait=0.0
+    )
+    assert combined.status() == {"models": {"a:m1": 10.0, "b:m2": 20.0}, "providers": {"a": 5.0}}
+
+
 def test_sqlite_store_shares_cooldowns_between_clients(tmp_path, clock):
     path = tmp_path / "state.db"
     server = FakeServer()
