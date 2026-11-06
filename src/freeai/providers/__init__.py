@@ -1,6 +1,7 @@
 """OpenAI-compatible providers and free-tier presets."""
 
-from ._impl import CONNECTION_LIMITS, Completion, Provider, SnapshotSink, Tier, Verdict
+from ._impl import Completion, Provider, SnapshotSink, Tier, Verdict
+from ._transport_mixin import CONNECTION_LIMITS
 from .gemini import GEMINI_FREE_MODELS, Gemini
 from .groq import GROQ_FREE_MODELS, Groq
 from .openrouter import OPENROUTER_BASE_URL, OpenRouter
