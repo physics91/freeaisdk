@@ -468,8 +468,7 @@ class Provider:
         try:
             return self._parse_quota(self._get_json(path))
         except (HTTPError, ValueError, KeyError, TypeError) as exc:
-            logger.info("%s: could not read the quota: %s", self.name, exc)
-            return []
+            return self._quota_unavailable(exc)
 
     async def arefresh_quota(self) -> list[RateSnapshot]:
         path = self._quota_path()
@@ -478,8 +477,11 @@ class Provider:
         try:
             return self._parse_quota(await self._aget_json(path))
         except (HTTPError, ValueError, KeyError, TypeError) as exc:
-            logger.info("%s: could not read the quota: %s", self.name, exc)
-            return []
+            return self._quota_unavailable(exc)
+
+    def _quota_unavailable(self, exc: Exception) -> list[RateSnapshot]:
+        logger.info("%s: could not read the quota: %s", self.name, exc)
+        return []
 
     def _quota_path(self) -> str | None:
         return None
