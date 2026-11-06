@@ -17,12 +17,12 @@ from ._impl import (
     Groq,
     Kilo,
     Mistral,
-    OpenRouter,
     Provider,
     Requesty,
     SambaNova,
     Tier,
 )
+from .openrouter import OpenRouter
 
 
 def groq(api_key: str | None = None, **kwargs: Any) -> Groq:

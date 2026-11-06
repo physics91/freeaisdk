@@ -16,7 +16,7 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, ClassVar, Literal
 
 from .._http import (
@@ -30,7 +30,6 @@ from .._http import (
     TransportError,
     _zone,
     decode,
-    embedded_header_names,
     error_object,
     error_text,
     is_event_stream,
@@ -56,6 +55,7 @@ from ..limits import (
     tpm,
 )
 from ..types import ModelInfo
+from ._catalog import _catalog_items, _catalog_model, _is_zero
 
 Tier = Literal["free", "trial", "paid", "unknown"]
 Verdict = tuple[FailureKind, Scope | None]
@@ -609,134 +609,6 @@ class Provider:
             raise ProviderFailure(FailureKind.AUTH, f"{self.name}: missing API key")
 
 
-# -- OpenRouter --------------------------------------------------------------------------------
-
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-_PLATFORM_LIMIT_HEADERS = frozenset({"x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"})
-_STRICT_PARAMS = ("tools", "tool_choice", "response_format")
-
-
-class OpenRouter(Provider):
-    """OpenRouter with automatic discovery of free models.
-
-    The free allowance is per account: 20 requests/minute and 50 or 1000 requests/day (shared by
-    every ``:free`` model, failed attempts included). ``rpm`` defaults to 20 and the daily budget is
-    synced from ``GET /key`` on first use and after a daily-limit 429.
-    """
-
-    tier: Tier = "free"
-    key_env = "OPENROUTER_API_KEY"
-    can_deny_training = True
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        *,
-        include_routers: bool = True,
-        include_zero_priced: bool = False,
-        app_name: str | None = None,
-        app_url: str | None = None,
-        rpm: int | None = 20,
-        name: str = "openrouter",
-        base_url: str = OPENROUTER_BASE_URL,
-        headers: Mapping[str, str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        merged = dict(headers or {})
-        if app_url:
-            merged["HTTP-Referer"] = app_url
-        if app_name:
-            merged["X-Title"] = app_name
-        self.include_routers = include_routers
-        self.include_zero_priced = include_zero_priced
-        super().__init__(name, base_url, api_key=api_key, rpm=rpm, headers=merged, **kwargs)
-
-    def _catalog_paths(self) -> tuple[str, ...]:
-        # /models/user already drops models the account's privacy settings would reject (404).
-        return ("/models/user", "/models") if self.api_key else ("/models",)
-
-    def _parse_catalog(self, body: Any) -> list[ModelInfo]:
-        today = datetime.now(UTC).date().isoformat()
-        models = [m for item in _catalog_items(body) if (m := self._free_model(item, today))]
-        return sorted(models, key=lambda m: m.is_router)  # stable: keeps API order, routers last
-
-    def _free_model(self, item: dict[str, Any], today: str) -> ModelInfo | None:
-        if not isinstance(item.get("id"), str):
-            return None
-        model_id: str = item["id"]
-        architecture = item.get("architecture") or {}
-        if set(architecture.get("output_modalities") or ["text"]) != {"text"}:
-            return None  # audio/image generators are not chat models
-        expires = item.get("expiration_date")
-        if isinstance(expires, str) and expires < today:
-            return None
-        endpoints = item.get("endpoints")
-        if isinstance(endpoints, list) and endpoints and "/api/v1/chat/completions" not in endpoints:
-            return None
-        if not _is_zero_priced(item.get("pricing")):
-            return None  # never risk a billed request, even for a ":free" id
-        is_router = architecture.get("tokenizer") == "Router" or model_id.startswith("openrouter/")
-        if is_router:
-            if not self.include_routers:
-                return None
-        elif not (model_id.endswith(":free") or self.include_zero_priced):
-            return None
-        return _catalog_model(self.name, item, is_router=is_router)
-
-    def prepare_payload(self, model_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-        body = super().prepare_payload(model_id, payload)
-        if any(body.get(name) is not None for name in _STRICT_PARAMS):
-            # Without this OpenRouter may route to an endpoint that silently ignores tools/JSON mode.
-            body["provider"] = {**(body.get("provider") or {}), "require_parameters": True}
-        return body
-
-    def deny_training(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        body = dict(payload)
-        body["provider"] = {**(body.get("provider") or {}), "data_collection": "deny"}
-        return body
-
-    def _verdict(self, code: int, headers: Headers, error: dict[str, Any], text: str) -> Verdict:
-        metadata = _metadata(error)
-        if code == 402 and metadata.get("limit_source") == "openrouter_in_flight_budget":
-            return FailureKind.PROVIDER_RATE_LIMIT, Scope.PROVIDER
-        return super()._verdict(code, headers, error, text)
-
-    def _rate_limit_verdict(self, headers: Headers, error: dict[str, Any], text: str) -> Verdict:
-        # Message prefixes come first: account-limit samples also carry a provider_name.
-        if "free-models-per-day" in text:
-            return FailureKind.QUOTA_EXHAUSTED, Scope.PROVIDER
-        if "free-models-per-" in text:
-            return FailureKind.PROVIDER_RATE_LIMIT, Scope.PROVIDER
-        if "limit_rpd/" in text:
-            return FailureKind.QUOTA_EXHAUSTED, Scope.MODEL
-        if "limit_rpm/" in text or "rate-limited upstream" in text:
-            return FailureKind.RATE_LIMIT, Scope.MODEL
-        metadata = _metadata(error)
-        if metadata.get("provider_name") or metadata.get("provider_code") is not None:
-            return FailureKind.RATE_LIMIT, Scope.MODEL  # upstream provider limit: another model may work
-        names = {name.lower() for name in headers} | embedded_header_names(error)
-        if names & _PLATFORM_LIMIT_HEADERS or not error:
-            # Platform limit, or a 429 page without an OpenRouter error object (edge/DDoS).
-            return FailureKind.PROVIDER_RATE_LIMIT, Scope.PROVIDER
-        return FailureKind.RATE_LIMIT, Scope.MODEL
-
-    def rate_snapshots(self, headers: Mapping[str, str]) -> list[RateSnapshot]:
-        return []  # X-RateLimit-* carry no window; the daily state comes from GET /key
-
-    def _quota_path(self) -> str | None:
-        return "/key" if self.api_key else None
-
-    def _parse_quota(self, body: Any) -> list[RateSnapshot]:
-        data = body.get("data", body) if isinstance(body, dict) else {}
-        daily = data.get("free_model_daily_requests") if isinstance(data, dict) else None
-        if not isinstance(daily, dict) or not isinstance(daily.get("used"), int):
-            return []
-        limit = daily.get("limit")
-        if not isinstance(limit, int) or limit <= 0:
-            return []
-        return [RateSnapshot("day", "requests", limit, max(0, limit - daily["used"]), "provider")]
-
-
 # -- Presets with a known free tier (verified 2026-11-06, see reports/) -------------------------
 
 _VERIFIED = "2026-11-06"
@@ -1241,31 +1113,6 @@ class Mistral(Provider):
 # -- helpers -----------------------------------------------------------------------------------
 
 
-def _catalog_items(body: Any) -> list[dict[str, Any]]:
-    items = body.get("data") if isinstance(body, dict) else body
-    if not isinstance(items, list):
-        raise ValueError("unexpected /models response shape")
-    return [item for item in items if isinstance(item, dict)]
-
-
-def _catalog_model(provider: str, item: dict[str, Any], *, is_router: bool = False) -> ModelInfo:
-    """A ``ModelInfo`` from an OpenRouter-style catalog entry (shared by OpenRouter-like gateways)."""
-    raw = item.get("architecture")
-    architecture: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    parameters = item.get("supported_parameters")
-    context = item.get("context_length", item.get("context_window"))
-    inputs = architecture.get("input_modalities")
-    return ModelInfo(
-        provider=provider,
-        id=str(item["id"]),
-        name=item.get("name") if isinstance(item.get("name"), str) else None,
-        context_length=context if isinstance(context, int) else None,
-        input_modalities=frozenset(inputs) if isinstance(inputs, list) and inputs else None,
-        supported_parameters=frozenset(parameters) if isinstance(parameters, list) else None,
-        is_router=is_router,
-    )
-
-
 _WINDOWS: dict[str, Window] = {"minute": "minute", "hour": "hour", "day": "day", "month": "month"}
 
 
@@ -1308,23 +1155,6 @@ def _message(error: dict[str, Any], body: Any, code: int) -> str:
     if isinstance(raw, str) and raw and raw not in message:
         message = f"{message}: {raw}"
     return message[:500]
-
-
-def _is_zero(value: Any) -> bool:
-    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-        return False
-    try:
-        return float(value) == 0
-    except ValueError:
-        return False
-
-
-def _is_zero_priced(pricing: Any) -> bool:
-    if not isinstance(pricing, dict) or "prompt" not in pricing or "completion" not in pricing:
-        return False
-    return all(
-        _is_zero(value) for key, value in pricing.items() if key != "discount" and isinstance(value, (str, int, float))
-    )
 
 
 def _without(message: Any, key: str) -> Any:

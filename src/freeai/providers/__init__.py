@@ -22,7 +22,6 @@ from ._impl import (
     Groq,
     Kilo,
     Mistral,
-    OpenRouter,
     Provider,
     Requesty,
     SambaNova,
@@ -30,6 +29,7 @@ from ._impl import (
     Tier,
     Verdict,
 )
+from .openrouter import OPENROUTER_BASE_URL, OpenRouter
 from .presets import PRESETS, Preset, cerebras, gemini, groq, mistral
 
 __all__ = [
@@ -41,6 +41,7 @@ __all__ = [
     "GROQ_FREE_MODELS",
     "NVIDIA",
     "NVIDIA_FREE_MODELS",
+    "OPENROUTER_BASE_URL",
     "OVH",
     "OVH_ANONYMOUS_MODELS",
     "PRESETS",
