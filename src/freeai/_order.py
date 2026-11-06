@@ -62,8 +62,12 @@ class OrderPolicy:
     ) -> list[ModelInfo]:
         """Candidates for ``request`` in the order they will be tried (ignoring cooldowns)."""
         pool = [m for provider in self.providers for m in pools.get(provider.name, ())]
+        ranks: dict[str, int] | None = None
         if request.models:  # explicit choice overrides the default exclusions
-            pool = [m for m in pool if _rank(m, request.models) < len(request.models)]
+            # Same patterns drive filter and prefer-order; compute rank once per model.
+            ranked = [(m, _rank(m, request.models)) for m in pool]
+            pool = [m for m, rank in ranked if rank < len(request.models)]
+            ranks = {m.key: rank for m, rank in ranked if rank < len(request.models)}
         else:
             pool = [m for m in pool if _rank(m, self.exclude) == len(self.exclude)]
         pool = [m for m in pool if m.satisfies(request.requirements) and self._privacy_ok(m)]
@@ -71,7 +75,8 @@ class OrderPolicy:
         patterns = request.models or request.prefer or self.prefer
         groups: dict[tuple[bool, int], list[ModelInfo]] = {}
         for m in pool:
-            groups.setdefault((m.is_router, _rank(m, patterns)), []).append(m)
+            rank = ranks[m.key] if ranks is not None else _rank(m, patterns)
+            groups.setdefault((m.is_router, rank), []).append(m)
         ordered: list[ModelInfo] = []
         for key in sorted(groups):
             ordered.extend(self._arrange(groups[key], turn))

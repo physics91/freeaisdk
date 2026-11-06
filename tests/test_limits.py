@@ -433,6 +433,15 @@ def test_compiled_globs_match_fnmatchcase():
         assert _rank(model, []) == 0
 
 
+def test_order_reuses_explicit_model_ranks(clock):
+    """Explicit ``models`` filter and prefer-order share the same ``_rank`` values."""
+    provider = make_provider(FakeServer(), name="p", models=["flash-lite", "other", "flash"])
+    ai = make(FakeServer(), clock, provider)
+    request = ai._router.prepare("hi", None, ["*flash*", "other"], (), None, {})
+    ordered = ai._router.order(request, ai._pools(), turn=0)
+    assert [m.id for m in ordered] == ["flash-lite", "flash", "other"]
+
+
 def test_status_single_pass_reads_models_for_all_providers(clock):
     store = MemoryStore()
     first = make(FakeServer(), clock, make_provider(FakeServer(), name="a", models=["m1"]), store=store)
