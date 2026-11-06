@@ -366,25 +366,34 @@ class Router:
         snapshots = list(snapshots)
         if not snapshots:
             return
+        with self._lock, self.store.transaction() as tx:
+            self._observe_tx(tx, provider_name, model_id, snapshots)
+
+    def _observe_tx(
+        self, tx: State, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]
+    ) -> None:
+        """Apply ``snapshots`` into an open transaction. Caller must hold ``_lock``; no nested lock."""
+        snapshots = list(snapshots)
+        if not snapshots:
+            return
         provider = self._by_name[provider_name]
         sid = provider.state_id
-        with self._lock, self.store.transaction() as tx:
-            now = self.clock()
-            by_id = {_learned_identity(entry): dict(entry) for entry in tx.get(_learned_key(sid), [])}
-            for snapshot in snapshots:
-                quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz)
-                entry = {
-                    "per": snapshot.per,
-                    "unit": snapshot.unit,
-                    "scope": snapshot.scope,
-                    "model": model_id if snapshot.scope == "model" else None,
-                    "amount": snapshot.limit,
-                }
-                by_id[_learned_identity(entry)] = entry
-            # Sorted only for stable store bytes; consumers treat the registry as a bag.
-            tx[_learned_key(sid)] = [
-                by_id[identity] for identity in sorted(by_id, key=lambda item: (*item[:3], item[3] or ""))
-            ]
+        now = self.clock()
+        by_id = {_learned_identity(entry): dict(entry) for entry in tx.get(_learned_key(sid), [])}
+        for snapshot in snapshots:
+            quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz)
+            entry = {
+                "per": snapshot.per,
+                "unit": snapshot.unit,
+                "scope": snapshot.scope,
+                "model": model_id if snapshot.scope == "model" else None,
+                "amount": snapshot.limit,
+            }
+            by_id[_learned_identity(entry)] = entry
+        # Sorted only for stable store bytes; consumers treat the registry as a bag.
+        tx[_learned_key(sid)] = [
+            by_id[identity] for identity in sorted(by_id, key=lambda item: (*item[:3], item[3] or ""))
+        ]
 
     def status(self) -> dict[str, dict[str, float]]:
         """Remaining cooldown seconds per model key and per provider."""
@@ -599,9 +608,13 @@ class Plan:
         reservation, self._reservation = self._reservation, _NO_RESERVATION
         snapshots = list(snapshots)
         self._admitted.extend(snapshots)
-        self.router.admitted(reservation)
-        self.router.observe(model.provider, model.id, snapshots)
-        self.router.changed()
+        router = self.router
+        with router._lock, router.store.transaction() as tx:
+            # Drop pending before observe so header readings are not double-counted with the reserve.
+            if reservation.keys:
+                pending_drop(tx, reservation.id, reservation.keys)
+            router._observe_tx(tx, model.provider, model.id, snapshots)
+        router.changed()
 
     def release(self, model: ModelInfo) -> None:
         """The attempt ended without an outcome (e.g. the caller stopped reading or was cancelled)."""
@@ -649,12 +662,12 @@ class Plan:
             delta = (used if used is not None else 0.0) - router.cost(provider, self.request).tokens
             limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
             quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+            router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots])
             if failure.scope is not Scope.REQUEST:
                 router.health.record(model.key, False, now - started)
             if failure.kind is FailureKind.UNAVAILABLE and router.retry_budget is not None:
                 router.retry_budget.on_failure()
                 self._budget_spent = not router.retry_budget.allows_retry()
-        router.observe(provider.name, model.id, [*failure.snapshots, *snapshots])
         router.changed()
         if failure.kind is FailureKind.MODEL_GONE:
             provider.invalidate()
@@ -705,13 +718,13 @@ class Plan:
                 limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
                 delta = used - router.cost(provider, self.request).tokens
                 quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+            router._observe_tx(tx, provider.name, model.id, snapshots)
             latency = now - started
             router.health.record(model.key, True, latency)
             if model.is_router and served_model and served_model != model.id:
                 router.health.record(f"{model.provider}:{served_model}", True, latency)  # credit the real model
             if router.retry_budget is not None:
                 router.retry_budget.on_success()
-        router.observe(provider.name, model.id, snapshots)
         router.changed()
         self._emit(
             Attempt(
