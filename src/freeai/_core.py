@@ -35,10 +35,10 @@ from .errors import (
     ProviderFailure,
     Scope,
 )
+from .health import HealthStats
 from .limits import (
     CooldownPolicy,
     Cost,
-    HealthStats,
     Limit,
     RateSnapshot,
     RetryBudget,

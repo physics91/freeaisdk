@@ -1,7 +1,7 @@
-"""Quota windows, cooldowns, health statistics and the retry budget.
+"""Quota windows, cooldowns, and the in-process retry budget.
 
 Window and cooldown state is read and written through a store transaction (see ``state.py``) so
-several processes can share it; health statistics and the retry budget stay in-process.
+several processes can share it. Routing health scores live in :mod:`freeai.health`.
 """
 
 from __future__ import annotations
@@ -460,42 +460,7 @@ def _next_boundary(per: Window, now: float, tz: str) -> float:
     return start.timestamp()
 
 
-# -- health and retry budget (in-process) ------------------------------------------------------
-
-
-@dataclass(slots=True)
-class _Ewma:
-    success: float = 1.0
-    latency: float = 1.0
-    samples: int = 0
-
-
-class HealthStats:
-    """Exponentially weighted success rate and latency per model, for ``strategy="health"``.
-
-    Unknown models start optimistic so that new free models get tried.
-    """
-
-    def __init__(self, alpha: float = 0.3) -> None:
-        self.alpha = alpha
-        self._stats: dict[str, _Ewma] = {}
-
-    def record(self, key: str, ok: bool, latency: float) -> None:
-        stat = self._stats.setdefault(key, _Ewma())
-        a = self.alpha if stat.samples else 1.0
-        stat.success = (1 - a) * stat.success + a * (1.0 if ok else 0.0)
-        if ok:
-            stat.latency = (1 - a) * stat.latency + a * max(latency, 0.0) if stat.samples else max(latency, 0.0)
-        stat.samples += 1
-
-    def score(self, key: str) -> float:
-        stat = self._stats.get(key)
-        if stat is None:
-            return 1.0
-        return stat.success / (1.0 + stat.latency)
-
-    def snapshot(self) -> dict[str, dict[str, float]]:
-        return {k: {"success": v.success, "latency": v.latency, "samples": v.samples} for k, v in self._stats.items()}
+# -- retry budget (in-process) -----------------------------------------------------------------
 
 
 @dataclass(slots=True)
