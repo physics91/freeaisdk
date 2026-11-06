@@ -346,13 +346,28 @@ class FreeAI(_ClientBase):
 
     def _plan(self, request: Request, max_attempts: int | None, deadline: float | None) -> Plan:
         router = self._router
-        ordered = router.order(request, self._pools(), turn=router.next_turn())
+        # Overlap account-quota HTTP with catalog discovery on the first plan.
+        early = router.claim_warmups(p.name for p in self.providers if p.quota_may_fetch())
+        if early:
+            workers = min(1 + len(early), 32, (os.cpu_count() or 1) + 4)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                pools_future = pool.submit(self._pools)
+                snapshots = list(pool.map(lambda provider: provider.refresh_quota(), early))
+                pools = pools_future.result()
+            router.observe_many(
+                (provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True)
+            )
+        else:
+            pools = self._pools()
+        ordered = router.order(request, pools, turn=router.next_turn())
         plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
         self._observe_warmups(router.claim_warmups(plan.providers))
         return plan
 
     def _observe_warmups(self, warmups: Sequence[Provider]) -> None:
         """Fetch each provider's quota once; parallelize only when several may hit the network."""
+        if not warmups:
+            return
         if len(warmups) <= 1 or not any(provider.quota_may_fetch() for provider in warmups):
             snapshots = [provider.refresh_quota() for provider in warmups]
         else:

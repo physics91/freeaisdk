@@ -202,13 +202,26 @@ class AsyncFreeAI(_ClientBase):
 
     async def _plan(self, request: Request, max_attempts: int | None, deadline: float | None) -> Plan:
         router = self._router
-        ordered = router.order(request, await self._pools(), turn=router.next_turn())
+        # Overlap account-quota HTTP with catalog discovery on the first plan.
+        early = router.claim_warmups(p.name for p in self.providers if p.quota_may_fetch())
+        if early:
+            pools, *snapshots = await asyncio.gather(
+                self._pools(), *(provider.arefresh_quota() for provider in early)
+            )
+            router.observe_many(
+                (provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True)
+            )
+        else:
+            pools = await self._pools()
+        ordered = router.order(request, pools, turn=router.next_turn())
         plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
         await self._observe_warmups(router.claim_warmups(plan.providers))
         return plan
 
     async def _observe_warmups(self, warmups: Sequence[Provider]) -> None:
         """Fetch each provider's quota once; parallelize only when several may hit the network."""
+        if not warmups:
+            return
         if len(warmups) <= 1 or not any(provider.quota_may_fetch() for provider in warmups):
             snapshots = [await provider.arefresh_quota() for provider in warmups]
         else:

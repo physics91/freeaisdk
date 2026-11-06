@@ -111,6 +111,33 @@ def test_sync_pools_fetches_cold_catalogs_in_parallel():
     assert elapsed < delay * 1.7  # wall clock ~max(delay), not the sequential sum
 
 
+def test_sync_plan_overlaps_pools_with_quota_refresh():
+    delay = 0.15
+    from freeai.limits import RateSnapshot
+
+    class Both(Provider):
+        def __init__(self, name: str) -> None:
+            super().__init__(name, "https://example.test", api_key="k", keyless=False)
+
+        def _discover(self) -> list[ModelInfo]:
+            time.sleep(delay)
+            return [ModelInfo(self.name, "m")]
+
+        def _quota_path(self) -> str | None:
+            return "/quota"
+
+        def refresh_quota(self):
+            time.sleep(delay)
+            return [RateSnapshot("day", "requests", 10, 9, "provider")]
+
+    ai = FreeAI([Both("a")], max_wait=0.0)
+    request = ai._request("hi", None, None, (), None, {})
+    started = time.perf_counter()
+    ai._plan(request, None, None)
+    elapsed = time.perf_counter() - started
+    assert elapsed < delay * 1.7  # catalog and quota overlap on first plan
+
+
 def test_sync_warmups_refresh_quota_in_parallel():
     delay = 0.15
     from freeai.limits import RateSnapshot
