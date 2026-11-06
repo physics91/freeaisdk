@@ -440,9 +440,10 @@ class Router:
             if entry["model"] not in (None, model_id):
                 continue
             learned = Limit(float(entry["amount"]), entry["per"], entry["unit"], entry["scope"], source="observed")
-            if learned.key(sid, model_id) not in keys:
+            key = learned.key(sid, model_id)
+            if key not in keys:
                 limits.append(learned)
-                keys.add(learned.key(sid, model_id))
+                keys.add(key)
         return limits
 
     def changed(self) -> None:
