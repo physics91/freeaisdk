@@ -54,7 +54,7 @@ from .limits import (
     quota_observe,
     quota_ready_at,
 )
-from .providers import OpenRouter, Provider
+from .providers import Provider
 from .state import MemoryStore, StateStore
 from .types import Attempt, ChatResponse, ModelInfo, Requirements
 
@@ -174,7 +174,7 @@ class Router:
 
     def __init__(
         self,
-        providers: Provider | Sequence[Provider] | None = None,
+        providers: Provider | Sequence[Provider],
         *,
         prefer: Sequence[str] = (),
         exclude: Sequence[str] = DEFAULT_EXCLUDE,
@@ -194,9 +194,7 @@ class Router:
         clock: Callable[[], float] = time.time,
         rng: random.Random | None = None,
     ) -> None:
-        if providers is None:
-            providers = [OpenRouter()]
-        elif isinstance(providers, Provider):
+        if isinstance(providers, Provider):
             providers = [providers]
         self.providers = list(providers)
         if not self.providers:

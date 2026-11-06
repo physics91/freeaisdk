@@ -26,7 +26,7 @@ from ._core import (
 from ._http import logger
 from .errors import FailureKind, FreeAIError, OutputLimitError, ProviderFailure, StreamInterrupted
 from .limits import Cost
-from .providers import Provider, Tier, build_from_env
+from .providers import OpenRouter, Provider, Tier, build_from_env
 from .types import ChatResponse, ModelInfo, Requirements, StreamChunk
 
 __all__ = ["DEFAULT_EXCLUDE", "FreeAI", "chat", "stream"]
@@ -127,6 +127,8 @@ class _ClientBase:
     def __init__(
         self, providers: Provider | Sequence[Provider] | None = None, **options: Unpack[RouterOptions]
     ) -> None:
+        if providers is None:
+            providers = [OpenRouter()]
         self._router = Router(providers, **options)
 
     @classmethod
