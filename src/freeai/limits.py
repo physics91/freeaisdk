@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import fnmatch
 import math
-from collections.abc import Iterable, MutableMapping
+import re
+from collections.abc import Iterable, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Literal
 
 from ._http import _zone
@@ -153,7 +155,7 @@ class Limit:
     last_verified: str | None = None
 
     def applies_to(self, model_id: str) -> bool:
-        return self.models is None or any(fnmatch.fnmatchcase(model_id, p) for p in self.models)
+        return self.models is None or any(rx.match(model_id) is not None for rx in _compiled_globs(self.models))
 
     def key(self, provider: str, model_id: str) -> str:
         target = model_id if self.scope == "model" else "*"
@@ -186,6 +188,16 @@ def tpd(amount: float, **kwargs: Any) -> Limit:
 
 def per_month(amount: float, unit: Unit = "requests", **kwargs: Any) -> Limit:
     return Limit(amount, "month", unit, **kwargs)
+
+
+def _compiled_globs(patterns: Sequence[str]) -> tuple[re.Pattern[str], ...]:
+    """Compile shell-style globs once; ``fnmatchcase``-equivalent via ``translate`` + ``match``."""
+    return _compiled_globs_cached(tuple(patterns))
+
+
+@lru_cache(maxsize=256)
+def _compiled_globs_cached(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    return tuple(re.compile(fnmatch.translate(pattern)) for pattern in patterns)
 
 
 @dataclass(frozen=True, slots=True)

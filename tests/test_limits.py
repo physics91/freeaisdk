@@ -1,6 +1,7 @@
 """Quota windows, header snapshots and the shared state store."""
 
 import asyncio
+import fnmatch
 import math
 
 import httpx
@@ -15,6 +16,7 @@ from freeai import (
     Gemini,
     Groq,
     Limit,
+    ModelInfo,
     Provider,
     RateSnapshot,
     Scope,
@@ -23,7 +25,7 @@ from freeai import (
     rpm,
     tpm,
 )
-from freeai._core import Wait
+from freeai._core import Wait, _rank
 from freeai.limits import (
     EDGE_MARGIN,
     Cost,
@@ -380,6 +382,38 @@ def test_limit_metadata_and_globs():
     assert not limit.applies_to("llama")
     assert limit.key("p", "gpt-oss-120b") == "q:p:gpt-oss-120b:day:requests"
     assert Limit(1, "minute", scope="provider").key("p", "x") == "q:p:*:minute:requests"
+
+
+def test_compiled_globs_match_fnmatchcase():
+    patterns = ("*flash*", "provider:exact", "a_b%", "*-mini*", "CASE", "")
+    samples = (
+        "xflashy",
+        "flash",
+        "provider:exact",
+        "a_b%",
+        "foo-mini-bar",
+        "CASE",
+        "case",
+        "plain",
+        "",
+    )
+    assert Limit(1, "minute").applies_to("anything")  # models is None
+    for pattern in patterns:
+        limit = Limit(1, "minute", models=(pattern,))
+        for sample in samples:
+            assert limit.applies_to(sample) is fnmatch.fnmatchcase(sample, pattern)
+    models = [
+        ModelInfo(provider="p", id="flash-lite"),
+        ModelInfo(provider="p", id="other"),
+        ModelInfo(provider="provider", id="exact"),
+    ]
+    for model in models:
+        expected = next(
+            (i for i, pattern in enumerate(patterns) if fnmatch.fnmatchcase(model.key, pattern) or fnmatch.fnmatchcase(model.id, pattern)),
+            len(patterns),
+        )
+        assert _rank(model, patterns) == expected
+        assert _rank(model, []) == 0
 
 
 def test_sqlite_store_shares_cooldowns_between_clients(tmp_path, clock):

@@ -6,7 +6,6 @@ that perform the network calls this module asks for.
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import math
 import os
@@ -37,6 +36,7 @@ from .limits import (
     RateSnapshot,
     RetryBudget,
     State,
+    _compiled_globs,
     cooldown_fail,
     cooldown_failures,
     cooldown_ready_at,
@@ -864,7 +864,7 @@ def _input_modalities(messages: list[Message]) -> frozenset[str]:
 
 def _rank(model: ModelInfo, patterns: Sequence[str]) -> int:
     """Index of the first pattern matching the model's id or provider:id key, else len(patterns)."""
-    for index, pattern in enumerate(patterns):
-        if fnmatch.fnmatchcase(model.key, pattern) or fnmatch.fnmatchcase(model.id, pattern):
+    for index, matcher in enumerate(_compiled_globs(patterns)):
+        if matcher.match(model.key) is not None or matcher.match(model.id) is not None:
             return index
     return len(patterns)
