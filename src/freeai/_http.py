@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from typing import Any
 
@@ -299,6 +299,24 @@ class EventReader:
 
     def finish(self) -> list[dict[str, Any]]:
         return self._accept(self._decoder.flush())
+
+    def consume(self, lines: Iterable[str]) -> Iterator[dict[str, Any]]:
+        """Feed SSE lines until ``done``, then flush; preserves feed → yield → done → finish order."""
+        for line in lines:
+            yield from self.feed(line)
+            if self.done:
+                return
+        yield from self.finish()
+
+    async def aconsume(self, lines: AsyncIterable[str]) -> AsyncIterator[dict[str, Any]]:
+        """Async variant of :meth:`consume`."""
+        async for line in lines:
+            for event in self.feed(line):
+                yield event
+            if self.done:
+                return
+        for event in self.finish():
+            yield event
 
     def _accept(self, items: list[Any]) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []

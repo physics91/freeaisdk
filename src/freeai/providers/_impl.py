@@ -386,11 +386,7 @@ class Provider:
                 reader = EventReader(
                     self.name, resp_headers, first_token_timeout, classify=self.classify
                 )
-                for line in response.iter_lines():
-                    yield from reader.feed(line)
-                    if reader.done:
-                        return
-                yield from reader.finish()
+                yield from reader.consume(response.iter_lines())
         except TransportError as exc:
             raise self._transport_failure(exc) from exc
 
@@ -422,12 +418,7 @@ class Provider:
                 reader = EventReader(
                     self.name, resp_headers, first_token_timeout, classify=self.classify
                 )
-                async for line in response.aiter_lines():
-                    for event in reader.feed(line):
-                        yield event
-                    if reader.done:
-                        return
-                for event in reader.finish():
+                async for event in reader.aconsume(response.aiter_lines()):
                     yield event
         except TransportError as exc:
             raise self._transport_failure(exc) from exc
