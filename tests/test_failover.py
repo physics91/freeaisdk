@@ -296,6 +296,21 @@ def test_discovery_prefers_models_user_when_keyed(make_ai, server):
     assert server.paths[0] == "/api/v1/models/user"
 
 
+def test_discovery_falls_back_to_next_catalog_path(server):
+    class FallingServer(FakeServer):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path.endswith("/models/user"):
+                self.paths.append(path)
+                return httpx.Response(503, json={"error": {"message": "busy"}})
+            return super().__call__(request)
+
+    falling = FallingServer(server.catalog)
+    models = OpenRouter(api_key="sk-test", http_client=falling.client()).list_models()
+    assert falling.paths == ["/api/v1/models/user", "/api/v1/models"]
+    assert models
+
+
 def test_openrouter_requires_parameters_for_tools(make_ai, server):
     tools = [{"type": "function", "function": {"name": "w", "parameters": {}}}]
     make_ai().chat("weather?", tools=tools, n=3)

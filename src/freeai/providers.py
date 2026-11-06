@@ -268,9 +268,7 @@ class Provider:
             try:
                 return self._parse_catalog(self._get_json(path))
             except HTTPError as exc:
-                if index == len(paths) - 1:
-                    raise
-                logger.info("%s: %s unavailable (%s); trying the next catalog", self.name, path, exc)
+                self._catalog_path_failed(path, index, paths, exc)
         return []
 
     async def _adiscover(self) -> list[ModelInfo]:
@@ -279,10 +277,13 @@ class Provider:
             try:
                 return self._parse_catalog(await self._aget_json(path))
             except HTTPError as exc:
-                if index == len(paths) - 1:
-                    raise
-                logger.info("%s: %s unavailable (%s); trying the next catalog", self.name, path, exc)
+                self._catalog_path_failed(path, index, paths, exc)
         return []
+
+    def _catalog_path_failed(self, path: str, index: int, paths: tuple[str, ...], exc: HTTPError) -> None:
+        if index == len(paths) - 1:
+            raise
+        logger.info("%s: %s unavailable (%s); trying the next catalog", self.name, path, exc)
 
     def _parse_catalog(self, body: Any) -> list[ModelInfo]:
         return [self._as_model(str(item["id"])) for item in _catalog_items(body) if item.get("id")]
