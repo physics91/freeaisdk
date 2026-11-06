@@ -761,10 +761,6 @@ def _model_key(sid: str, model_id: str) -> str:
     return f"cd:m:{sid}|{model_id}"
 
 
-def _model_prefix(sid: str) -> str:
-    return f"cd:m:{sid}|"
-
-
 def _provider_key(sid: str) -> str:
     return f"cd:p:{sid}"
 
