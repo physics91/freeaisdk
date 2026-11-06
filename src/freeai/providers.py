@@ -338,22 +338,21 @@ class Provider:
         on_snapshots: SnapshotSink | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         self._require_key()
-        url, body, headers = self._request(model_id, payload, stream=True)
+        url, body, req_headers = self._request(model_id, payload, stream=True)
         try:
             with self._client().stream(
-                "POST", url, json=body, headers=headers, **self._timeout_args(timeout, first_token_timeout)
+                "POST", url, json=body, headers=req_headers, **self._timeout_args(timeout, first_token_timeout)
             ) as response:
-                if response.status_code != 200:
+                status, resp_headers = response.status_code, response.headers
+                if status != 200 or not _is_event_stream(resp_headers):
                     response.read()
-                    raise self.classify(response.status_code, response.headers, decode(response))
-                if on_snapshots is not None:
-                    on_snapshots(self.rate_snapshots(response.headers))
-                if not _is_event_stream(response.headers):
-                    # Some servers answer a stream request with one JSON document (often an error).
-                    response.read()
-                    yield from self._json_as_stream(response.headers, decode(response))
+                    events = self._stream_preamble(status, resp_headers, decode(response), on_snapshots)
+                    if events is None:
+                        raise RuntimeError("non-SSE stream preamble returned no events")
+                    yield from events
                     return
-                reader = _EventReader(self, response.headers, first_token_timeout)
+                self._stream_preamble(status, resp_headers, None, on_snapshots)
+                reader = _EventReader(self, resp_headers, first_token_timeout)
                 for line in response.iter_lines():
                     yield from reader.feed(line)
                     if reader.done:
@@ -372,22 +371,22 @@ class Provider:
         on_snapshots: SnapshotSink | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         self._require_key()
-        url, body, headers = self._request(model_id, payload, stream=True)
+        url, body, req_headers = self._request(model_id, payload, stream=True)
         try:
             async with self._async_client().stream(
-                "POST", url, json=body, headers=headers, **self._timeout_args(timeout, first_token_timeout)
+                "POST", url, json=body, headers=req_headers, **self._timeout_args(timeout, first_token_timeout)
             ) as response:
-                if response.status_code != 200:
+                status, resp_headers = response.status_code, response.headers
+                if status != 200 or not _is_event_stream(resp_headers):
                     await response.aread()
-                    raise self.classify(response.status_code, response.headers, decode(response))
-                if on_snapshots is not None:
-                    on_snapshots(self.rate_snapshots(response.headers))
-                if not _is_event_stream(response.headers):
-                    await response.aread()
-                    for event in self._json_as_stream(response.headers, decode(response)):
+                    events = self._stream_preamble(status, resp_headers, decode(response), on_snapshots)
+                    if events is None:
+                        raise RuntimeError("non-SSE stream preamble returned no events")
+                    for event in events:
                         yield event
                     return
-                reader = _EventReader(self, response.headers, first_token_timeout)
+                self._stream_preamble(status, resp_headers, None, on_snapshots)
+                reader = _EventReader(self, resp_headers, first_token_timeout)
                 async for line in response.aiter_lines():
                     for event in reader.feed(line):
                         yield event
@@ -397,6 +396,26 @@ class Provider:
                     yield event
         except TransportError as exc:
             raise self._transport_failure(exc) from exc
+
+    def _stream_preamble(
+        self,
+        status: int,
+        headers: Headers,
+        body: Any | None,
+        on_snapshots: SnapshotSink | None,
+    ) -> list[dict[str, Any]] | None:
+        """Shared classify / snapshot / JSON-body handling for :meth:`stream` and :meth:`astream`.
+
+        Callers must read and decode ``body`` before calling when ``status != 200`` or the response
+        is not an event stream. Returns the JSON-as-stream events, or ``None`` to continue with SSE.
+        """
+        if status != 200:
+            raise self.classify(status, headers, body)
+        if on_snapshots is not None:
+            on_snapshots(self.rate_snapshots(headers))
+        if not _is_event_stream(headers):
+            return list(self._json_as_stream(headers, body))
+        return None
 
     def _request(
         self, model_id: str, payload: Mapping[str, Any], *, stream: bool
