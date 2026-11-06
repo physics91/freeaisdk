@@ -5,7 +5,6 @@ from ._impl import (
     CLOUDFLARE_FREE_MODELS,
     COHERE_TRIAL_MODELS,
     CONNECTION_LIMITS,
-    GEMINI_FREE_MODELS,
     NVIDIA,
     NVIDIA_FREE_MODELS,
     OVH,
@@ -17,7 +16,6 @@ from ._impl import (
     Cloudflare,
     Cohere,
     Completion,
-    Gemini,
     Kilo,
     Mistral,
     Provider,
@@ -27,6 +25,7 @@ from ._impl import (
     Tier,
     Verdict,
 )
+from .gemini import GEMINI_FREE_MODELS, Gemini
 from .groq import GROQ_FREE_MODELS, Groq
 from .openrouter import OPENROUTER_BASE_URL, OpenRouter
 from .presets import PRESETS, Preset, cerebras, gemini, groq, mistral

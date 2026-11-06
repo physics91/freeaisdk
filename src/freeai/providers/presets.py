@@ -13,7 +13,6 @@ from ._impl import (
     Cerebras,
     Cloudflare,
     Cohere,
-    Gemini,
     Kilo,
     Mistral,
     Provider,
@@ -21,6 +20,7 @@ from ._impl import (
     SambaNova,
     Tier,
 )
+from .gemini import Gemini
 from .groq import Groq
 from .openrouter import OpenRouter
 
