@@ -1,0 +1,14 @@
+{"variant": "fixed", "request": 1, "waited_s": 2.3, "result": "ok"}
+{"variant": "fixed", "request": 2, "waited_s": 3.2, "result": "ok"}
+{"variant": "fixed", "request": 3, "waited_s": 36.3, "result": "ok"}
+{"variant": "fixed", "request": 4, "waited_s": 1.4, "result": "ok"}
+{"variant": "fixed", "request": 5, "waited_s": 49.5, "result": "ok"}
+{"variant": "fixed", "request": 6, "waited_s": 1.5, "result": "ok"}
+{"variant": "fixed", "attempts": [{"at_s": 2.3, "ok": true, "kind": null, "status": null}, {"at_s": 5.5, "ok": true, "kind": null, "status": null}, {"at_s": 41.7, "ok": true, "kind": null, "status": null}, {"at_s": 43.1, "ok": true, "kind": null, "status": null}, {"at_s": 92.6, "ok": true, "kind": null, "status": null}, {"at_s": 94.1, "ok": true, "kind": null, "status": null}], "upstream_429": 0}
+{"variant": "rolling", "request": 1, "waited_s": 2.4, "result": "ok"}
+{"variant": "rolling", "request": 2, "waited_s": 18.5, "result": "ok"}
+{"variant": "rolling", "request": 3, "waited_s": 11.5, "result": "exhausted: gave up after 1 attempts"}
+{"variant": "rolling", "request": 4, "waited_s": 30.3, "result": "ok"}
+{"variant": "rolling", "request": 5, "waited_s": 30.0, "result": "ok"}
+{"variant": "rolling", "request": 6, "waited_s": 30.1, "result": "ok"}
+{"variant": "rolling", "attempts": [{"at_s": 2.4, "ok": true, "kind": null, "status": null}, {"at_s": 20.8, "ok": true, "kind": null, "status": null}, {"at_s": 32.3, "ok": false, "kind": "rate_limit", "status": 429}, {"at_s": 62.6, "ok": true, "kind": null, "status": null}, {"at_s": 92.6, "ok": true, "kind": null, "status": null}, {"at_s": 122.7, "ok": true, "kind": null, "status": null}], "upstream_429": 1}

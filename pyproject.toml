@@ -1,0 +1,59 @@
+[project]
+name = "freeai"
+version = "0.1.0"
+description = "Chat with free LLMs (OpenRouter and OpenAI-compatible free tiers) with automatic model failover and 429 avoidance"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["llm", "openrouter", "free", "failover", "rate-limit", "openai", "groq", "gemini"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+authors = [
+    { name = "Jaeyeong Kim", email = "physics91@naver.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+]
+
+[project.optional-dependencies]
+otel = ["opentelemetry-api>=1.30"]
+
+[project.scripts]
+freeai = "freeai.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10.0"]  # match the installed uv; bump both together (uv 0.9 cannot unpack uv_build 0.13 sdists)
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+packages = ["freeai"]
+
+[[tool.mypy.overrides]]
+module = ["opentelemetry", "opentelemetry.*"]
+ignore_missing_imports = true

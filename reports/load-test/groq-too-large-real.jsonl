@@ -1,0 +1,1 @@
+{"first_served_by": "qwen/qwen3.8-27b", "second_served_by": "qwen/qwen3.8-27b", "cooldowns_after": {"models": {}, "providers": {}}, "attempts": [{"model": "qwen/qwen3.8-27b", "ok": true, "status": null, "kind": null, "message": ""}, {"model": "qwen/qwen3.8-27b", "ok": true, "status": null, "kind": null, "message": ""}], "wall_s": 0.5}

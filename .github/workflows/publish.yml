@@ -1,0 +1,40 @@
+# Action major tags (checkout@v5, setup-uv@v6, *-artifact@v4) were not checked against the
+# marketplace when this local file was written; verify and pin to commit SHAs before enabling.
+# Publishes to PyPI with Trusted Publishing (OIDC, no API token) when a GitHub release is published.
+# One-time setup on pypi.org: add a trusted publisher for this repository, workflow "publish.yml",
+# environment "pypi". The publish action also uploads PEP 740 attestations by default.
+name: publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest -q
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,0 +1,29 @@
+# Action major tags (checkout@v5, setup-uv@v6, *-artifact@v4) were not checked against the
+# marketplace when this local file was written; verify and pin to commit SHAs before enabling.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - run: uv run --with ruff ruff check src tests
+      - run: uv run --with ruff ruff format --check src tests
+      - run: uv run --with mypy mypy
+      - run: uv run --with opentelemetry-sdk pytest -q

@@ -1,0 +1,14 @@
+{"model": "qwen/qwen3.8-27b", "round": 0, "at_s": 0.4, "wall_s_in_hour": 96.4, "status": 200, "remaining_requests": "989", "reset_requests": "15m50.4s", "retry_after": null}
+{"model": "openai/gpt-oss-20b", "round": 0, "at_s": 2.5, "wall_s_in_hour": 98.5, "status": 200, "remaining_requests": "928", "reset_requests": "1h43m40.799s", "retry_after": null}
+{"model": "qwen/qwen3.8-27b", "round": 1, "at_s": 302.9, "wall_s_in_hour": 398.9, "status": 200, "remaining_requests": "991", "reset_requests": "12m57.599s", "retry_after": null}
+{"model": "openai/gpt-oss-20b", "round": 1, "at_s": 303.8, "wall_s_in_hour": 399.7, "status": 200, "remaining_requests": "930", "reset_requests": "1h40m48s", "retry_after": null}
+{"model": "qwen/qwen3.8-27b", "round": 2, "at_s": 604.1, "wall_s_in_hour": 700.1, "status": 200, "remaining_requests": "993", "reset_requests": "10m4.8s", "retry_after": null}
+{"model": "openai/gpt-oss-20b", "round": 2, "at_s": 604.6, "wall_s_in_hour": 700.6, "status": 200, "remaining_requests": "932", "reset_requests": "1h37m55.2s", "retry_after": null}
+{"model": "qwen/qwen3.8-27b", "round": 3, "at_s": 905.2, "wall_s_in_hour": 1001.1, "status": 200, "remaining_requests": "995", "reset_requests": "7m12s", "retry_after": null}
+{"model": "openai/gpt-oss-20b", "round": 3, "at_s": 905.6, "wall_s_in_hour": 1001.5, "status": 200, "remaining_requests": "934", "reset_requests": "1h35m2.4s", "retry_after": null}
+{"model": "qwen/qwen3.8-27b", "round": 4, "at_s": 1206.0, "wall_s_in_hour": 1302.0, "status": 200, "remaining_requests": "997", "reset_requests": "4m19.2s", "retry_after": null}
+{"model": "openai/gpt-oss-20b", "round": 4, "at_s": 1206.4, "wall_s_in_hour": 1302.4, "status": 200, "remaining_requests": "936", "reset_requests": "1h32m9.6s", "retry_after": null}
+{"model": "qwen/qwen3.8-27b", "round": 5, "at_s": 1506.9, "wall_s_in_hour": 1602.8, "status": 200, "remaining_requests": "999", "reset_requests": "1m26.4s", "retry_after": null}
+{"model": "openai/gpt-oss-20b", "round": 5, "at_s": 1507.2, "wall_s_in_hour": 1603.2, "status": 200, "remaining_requests": "938", "reset_requests": "1h29m16.8s", "retry_after": null}
+{"model": "qwen/qwen3.8-27b", "round": 6, "at_s": 1807.7, "wall_s_in_hour": 1903.6, "status": 200, "remaining_requests": "999", "reset_requests": "1m26.4s", "retry_after": null}
+{"model": "openai/gpt-oss-20b", "round": 6, "at_s": 1808.6, "wall_s_in_hour": 1904.5, "status": 200, "remaining_requests": "940", "reset_requests": "1h26m24s", "retry_after": null}
