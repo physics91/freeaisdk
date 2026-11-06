@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
-from ._http import (
+from .._http import (
     AsyncClient,
     Client,
     EventReader,
@@ -39,8 +39,8 @@ from ._http import (
     retry_hint,
     seconds_until_midnight,
 )
-from .errors import FailureKind, FreeAIError, ProviderFailure, Scope
-from .limits import (
+from ..errors import FailureKind, FreeAIError, ProviderFailure, Scope
+from ..limits import (
     Limit,
     LimitScope,
     RateSnapshot,
@@ -55,7 +55,7 @@ from .limits import (
     tph,
     tpm,
 )
-from .types import ModelInfo
+from ..types import ModelInfo
 
 Tier = Literal["free", "trial", "paid", "unknown"]
 Verdict = tuple[FailureKind, Scope | None]
