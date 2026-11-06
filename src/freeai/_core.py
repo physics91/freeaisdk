@@ -1,8 +1,8 @@
 """Routing core without I/O: candidate order, reservations, and failure bookkeeping.
 
-Message/response parsing lives in :mod:`freeai._messages`. The sync
-:class:`~freeai.FreeAI` and async :class:`~freeai.AsyncFreeAI` clients are thin shells that
-perform the network calls this module asks for.
+Message/response parsing lives in :mod:`freeai._messages`. Attempt bookkeeping lives in
+:mod:`freeai._plan`. The sync :class:`~freeai.FreeAI` and async :class:`~freeai.AsyncFreeAI`
+clients are thin shells that perform the network calls this module asks for.
 """
 
 from __future__ import annotations
@@ -14,10 +14,8 @@ import threading
 import time
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Any, Literal, NamedTuple, TypedDict
+from typing import Any, Literal, TypedDict
 
-from ._http import logger
 from ._messages import (
     Messages,
     _estimate_tokens,
@@ -29,14 +27,24 @@ from ._messages import (
 )
 from ._order import OrderPolicy
 from ._order import _rank as _rank  # re-export for ``from freeai._core import _rank``
-from .cooldown import CooldownPolicy, cooldown_fail, cooldown_failures, cooldown_ready_at
+from ._plan import Plan
+from ._routing_types import (
+    _NO_RESERVATION,
+    Request,
+    Reservation,
+    Wait,
+    _cooldown_bundle,
+    _learned_identity,
+    _learned_key,
+    _model_key,
+    _provider_key,
+)
+from .cooldown import CooldownPolicy, cooldown_failures, cooldown_ready_at
 from .errors import (
-    SKIP_FOR_REQUEST,
     BillingWarning,
     ExhaustedError,
     FailureKind,
     ProviderFailure,
-    Scope,
 )
 from .health import HealthStats
 from .limits import (
@@ -46,7 +54,6 @@ from .limits import (
     State,
     pending_add,
     pending_drop,
-    quota_adjust,
     quota_charge,
     quota_observe,
     quota_ready_at,
@@ -73,15 +80,6 @@ __all__ = [
     "to_response",
 ]
 
-
-class Reservation(NamedTuple):
-    """Quota charges of one request the platform has not accepted yet, as recorded in the store."""
-
-    id: str
-    keys: tuple[str, ...]
-
-
-_NO_RESERVATION = Reservation("", ())
 # A reservation counts on top of header readings until the platform accepts the request. It must
 # outlive the wait for response headers (bounded by the read timeout) or a live request's charge
 # would be wiped; if a process dies, its reservations over-count for at most this long.
@@ -115,7 +113,6 @@ _CAPABILITY_PARAMS = ("tools", "tool_choice", "response_format", "reasoning")
 _RESERVED_PARAMS = {"messages", "stream", "models"}
 # Only choices[0] is read, so extra choices would just burn quota (and Groq/Cerebras reject n != 1).
 _STRIPPED_PARAMS = {"n"}
-_MAX_BAD_REQUESTS_PER_PROVIDER = 2  # the same rejection twice means this provider dislikes the request
 _SLOT_POLL = 0.25  # re-check interval while a provider's concurrency slots or a probe are busy
 
 
@@ -139,27 +136,6 @@ class RouterOptions(TypedDict, total=False):
     on_attempt: Callable[[Attempt], None] | None
     clock: Callable[[], float]
     rng: random.Random | None
-
-
-@dataclass(frozen=True, slots=True)
-class Request:
-    payload: dict[str, Any]
-    requirements: Requirements
-    models: tuple[str, ...]
-    cost: Cost
-    prefer: tuple[str, ...] = ()  # alias patterns: ordering only
-
-
-@dataclass(frozen=True, slots=True)
-class Wait:
-    """Every candidate is busy; sleep this long, then ask the plan again.
-
-    ``group`` names the models the request can still use. Requests waiting with the same group are
-    interchangeable, so one of them is enough to try when quota frees up.
-    """
-
-    delay: float
-    group: frozenset[str] = field(default=frozenset(), compare=False)
 
 
 class Router:
@@ -527,306 +503,4 @@ class Router:
         return response
 
 
-class Plan:
-    """Attempt bookkeeping for one request: which candidate next, when to wait, when to give up."""
 
-    def __init__(
-        self, router: Router, request: Request, ordered: list[ModelInfo], limit: int, deadline_at: float | None
-    ) -> None:
-        self.router = router
-        self.request = request
-        self.ordered = ordered
-        self.limit = limit
-        self.deadline_at = deadline_at
-        self.attempts: list[Attempt] = []
-        self._skipped: set[str] = set()
-        self._rejected_by: dict[str, int] = {}
-        self._min_context = 0
-        self._waited = 0.0  # time actually spent waiting; a wake-up can cut a wait short
-        self._waiting_since: float | None = None
-        self._budget_spent = False
-        self._active: ModelInfo | None = None
-        self._reservation = _NO_RESERVATION
-        self._admitted: list[RateSnapshot] = []  # headers of the active attempt, applied on arrival
-
-    @property
-    def providers(self) -> set[str]:
-        return {m.provider for m in self.ordered}
-
-    def next(self) -> ModelInfo | Wait:
-        """The next model to call (already reserved), or how long to wait. Raises when exhausted."""
-        if len(self.attempts) >= self.limit:
-            raise ExhaustedError(f"gave up after {self.limit} attempts", self.attempts)
-        router = self.router
-        now = router.clock()
-        if self._waiting_since is not None:
-            self._waited += max(0.0, now - self._waiting_since)
-            self._waiting_since = None
-        if self.deadline_at is not None and now >= self.deadline_at:
-            raise ExhaustedError("deadline exceeded", self.attempts)
-        if self._budget_spent:
-            raise ExhaustedError("upstream failures are widespread; the retry budget is spent", self.attempts)
-        remaining = [
-            m
-            for m in self.ordered
-            if m.key not in self._skipped
-            and self._rejected_by.get(m.provider, 0) < _MAX_BAD_REQUESTS_PER_PROVIDER
-            and (m.context_length is None or m.context_length >= self._min_context)
-        ]
-        if not remaining:
-            raise ExhaustedError("every candidate model failed", self.attempts)
-        model, ready_at, reservation = router.reserve(remaining, self.request)
-        if model is not None:
-            self._active, self._reservation, self._admitted = model, reservation, []
-            return model
-        delay = max(0.0, ready_at - now)
-        if math.isinf(delay):
-            raise ExhaustedError("every candidate provider is disabled; check the API keys", self.attempts)
-        allowance = self.router.max_wait - self._waited
-        if self.deadline_at is not None:
-            allowance = min(allowance, self.deadline_at - now)
-        if delay > allowance:
-            raise ExhaustedError(
-                "all candidate models are cooling down or rate limited", self.attempts, next_available_in=delay
-            )
-        logger.info("all candidates busy; waiting %.2fs", delay)
-        self._waiting_since = now
-        return Wait(delay, frozenset(m.key for m in remaining))
-
-    def time_left(self) -> float | None:
-        """Seconds until the deadline, used as the per-attempt HTTP timeout."""
-        if self.deadline_at is None:
-            return None
-        return max(0.1, self.deadline_at - self.router.clock())
-
-    def admitted(self, snapshots: Iterable[RateSnapshot]) -> None:
-        """The platform accepted the active attempt: its stream headers arrived.
-
-        Its counters now include this request, so the reservation stops being added to header
-        readings, and the headers are applied now. By the time the stream ends they would no longer
-        count requests the platform accepted meanwhile.
-        """
-        model = self._active
-        if model is None:
-            return
-        reservation, self._reservation = self._reservation, _NO_RESERVATION
-        snapshots = list(snapshots)
-        self._admitted.extend(snapshots)
-        router = self.router
-        with router._lock, router.store.transaction() as tx:
-            # Drop pending before observe so header readings are not double-counted with the reserve.
-            if reservation.keys:
-                pending_drop(tx, reservation.id, reservation.keys)
-            router._observe_tx(tx, model.provider, model.id, snapshots)
-        router.changed()
-
-    def release(self, model: ModelInfo) -> None:
-        """The attempt ended without an outcome (e.g. the caller stopped reading or was cancelled)."""
-        detached, reservation = self._detach(model)
-        if not detached:
-            return
-        self.router._drop_pending(reservation)
-        self.router.changed()
-
-    def _detach(self, model: ModelInfo) -> tuple[bool, Reservation]:
-        """Clear the active attempt and concurrency slot; return any reservation still to drop."""
-        if self._active is None or self._active.key != model.key:
-            return False, _NO_RESERVATION
-        reservation, self._active, self._reservation = self._reservation, None, _NO_RESERVATION
-        self.router._release_slot(model)
-        return True, reservation
-
-    def failed(
-        self,
-        model: ModelInfo,
-        failure: ProviderFailure,
-        started: float,
-        snapshots: Iterable[RateSnapshot] = (),
-        *,
-        usage: Mapping[str, Any] | None = None,
-    ) -> bool:
-        """Record a failed attempt. Returns True when the caller should re-sync the provider's quota.
-
-        ``usage`` is the response's token usage when the server answered (empty, rejected or
-        truncated output); those tokens were spent, so they are settled instead of refunded.
-        """
-        _, reservation = self._detach(model)
-        router = self.router
-        provider = router.provider(model)
-        sid = provider.state_id
-        covered = _covered(failure.snapshots, snapshots, self._admitted)
-        committed = False
-        try:
-            with router._lock, router.store.transaction() as tx:
-                if reservation.keys:
-                    pending_drop(tx, reservation.id, reservation.keys)
-                now = router.clock()
-                if failure.scope is Scope.PROVIDER:
-                    cooldown = cooldown_fail(
-                        tx, _provider_key(sid), failure.kind, failure.retry_after, now, router.policy
-                    )
-                elif failure.scope is Scope.MODEL:
-                    cooldown = cooldown_fail(
-                        tx, _model_key(sid, model.id), failure.kind, failure.retry_after, now, router.policy
-                    )
-                else:
-                    cooldown = 0.0
-                # Refused requests consume no tokens: give the estimate back (requests stay charged).
-                used = _total_tokens(usage)
-                delta = (used if used is not None else 0.0) - router.cost(provider, self.request).tokens
-                limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
-                quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
-                router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots])
-                if failure.scope is not Scope.REQUEST:
-                    router.health.record(model.key, False, now - started)
-                if failure.kind is FailureKind.UNAVAILABLE and router.retry_budget is not None:
-                    router.retry_budget.on_failure()
-                    self._budget_spent = not router.retry_budget.allows_retry()
-            committed = True
-        except BaseException:
-            if reservation.keys and not committed:
-                router._drop_pending(reservation)
-            raise
-        router.changed()
-        if failure.kind is FailureKind.MODEL_GONE:
-            provider.invalidate()
-        if failure.kind in SKIP_FOR_REQUEST:
-            self._skipped.add(model.key)
-        if failure.kind is FailureKind.BAD_REQUEST:
-            self._rejected_by[model.provider] = self._rejected_by.get(model.provider, 0) + 1
-        if failure.kind is FailureKind.CONTEXT_EXCEEDED:
-            self._min_context = max(self._min_context, self._needed_context(model))
-        logger.info("%s failed (%s): %s; cooldown %.0fs", model.key, failure.kind, failure.message, cooldown)
-        self._emit(
-            Attempt(
-                provider=model.provider,
-                model=model.id,
-                ok=False,
-                latency=now - started,
-                kind=failure.kind,
-                status=failure.status,
-                message=failure.message,
-                cooldown=cooldown,
-                scope=failure.scope,
-            )
-        )
-        return failure.kind is FailureKind.QUOTA_EXHAUSTED and failure.scope is Scope.PROVIDER
-
-    def succeeded(
-        self,
-        model: ModelInfo,
-        started: float,
-        *,
-        snapshots: Iterable[RateSnapshot] = (),
-        usage: Mapping[str, Any] | None = None,
-        served_model: str | None = None,
-    ) -> None:
-        _, reservation = self._detach(model)
-        router = self.router
-        provider = router.provider(model)
-        sid = provider.state_id
-        snapshots = list(snapshots)
-        covered = _covered(snapshots, self._admitted)
-        committed = False
-        try:
-            with router._lock, router.store.transaction() as tx:
-                if reservation.keys:
-                    pending_drop(tx, reservation.id, reservation.keys)
-                now = router.clock()
-                for key in (_model_key(sid, model.id), _provider_key(sid)):
-                    if key in tx and float(tx[key]["until"]) <= now:
-                        del tx[key]  # recovered: reset the backoff (never cut a cooldown set meanwhile)
-                used = _total_tokens(usage)
-                if used is not None:
-                    limits = [
-                        lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered
-                    ]
-                    delta = used - router.cost(provider, self.request).tokens
-                    quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
-                router._observe_tx(tx, provider.name, model.id, snapshots)
-                latency = now - started
-                router.health.record(model.key, True, latency)
-                if model.is_router and served_model and served_model != model.id:
-                    router.health.record(f"{model.provider}:{served_model}", True, latency)  # credit the real model
-                if router.retry_budget is not None:
-                    router.retry_budget.on_success()
-            committed = True
-        except BaseException:
-            if reservation.keys and not committed:
-                router._drop_pending(reservation)
-            raise
-        router.changed()
-        self._emit(
-            Attempt(
-                provider=model.provider,
-                model=model.id,
-                ok=True,
-                latency=now - started,
-                served_model=served_model,
-                usage=dict(usage) if isinstance(usage, Mapping) else None,
-            )
-        )
-
-    def _needed_context(self, failed: ModelInfo) -> int:
-        """After a context-length rejection, require a window larger than the one that failed."""
-        if failed.context_length:
-            return failed.context_length + 1
-        return int(self.request.cost.tokens)
-
-    def _emit(self, attempt: Attempt) -> None:
-        self.attempts.append(attempt)
-        if self.router.on_attempt is not None:
-            self.router.on_attempt(attempt)
-
-
-# -- helpers -----------------------------------------------------------------------------------
-
-
-def _cooldown_bundle(tx: State, sid: str) -> tuple[Any, dict[str, Any], bool]:
-    """Provider cooldown entry plus optional authoritative model-id map for one ``state_id``.
-
-    When ``tx`` supports ``items_with_prefix``, the model map is complete for this transaction
-    (missing id means ready). Otherwise the map is empty and callers must use point lookups.
-    """
-    provider_entry = tx.get(_provider_key(sid))
-    items_with_prefix = getattr(tx, "items_with_prefix", None)
-    if not callable(items_with_prefix):
-        return provider_entry, {}, False
-    prefix = f"cd:m:{sid}|"
-    models = {key.removeprefix(prefix): entry for key, entry in items_with_prefix(prefix)}
-    return provider_entry, models, True
-
-
-def _model_key(sid: str, model_id: str) -> str:
-    """Cooldown key for one model. ``sid`` must not contain ``|`` (names use ``#`` for key digests)."""
-    return f"cd:m:{sid}|{model_id}"
-
-
-def _provider_key(sid: str) -> str:
-    return f"cd:p:{sid}"
-
-
-def _learned_key(sid: str) -> str:
-    return f"ql:{sid}"
-
-
-def _learned_identity(entry: Mapping[str, Any]) -> tuple[Any, Any, Any, Any]:
-    """Identity of a learned limit row; ``model`` stays ``None`` for provider scope."""
-    return entry["per"], entry["unit"], entry["scope"], entry["model"]
-
-
-def _covered(*groups: Iterable[RateSnapshot]) -> set[tuple[str, str]]:
-    """Windows whose counters the platform just reported, so local estimates must not touch them."""
-    return {(s.per, s.unit) for group in groups for s in group}
-
-
-def _total_tokens(usage: Mapping[str, Any] | None) -> float | None:
-    if not isinstance(usage, Mapping):
-        return None
-    total = usage.get("total_tokens")
-    if isinstance(total, (int, float)) and not isinstance(total, bool):
-        return float(total)
-    parts = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
-    if all(isinstance(p, (int, float)) and not isinstance(p, bool) for p in parts):
-        return float(sum(parts))  # type: ignore[arg-type]
-    return None
