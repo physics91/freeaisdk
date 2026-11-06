@@ -6,23 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ._impl import (
-    NVIDIA,
-    OVH,
-    ZAI,
-    Cerebras,
-    Cloudflare,
-    Cohere,
-    Kilo,
-    Mistral,
-    Provider,
-    Requesty,
-    SambaNova,
-    Tier,
-)
+from ._impl import Provider, Tier
 from .gemini import Gemini
 from .groq import Groq
 from .openrouter import OpenRouter
+from .platforms import NVIDIA, OVH, ZAI, Cerebras, Cloudflare, Cohere, Kilo, Mistral, Requesty, SambaNova
 
 
 def groq(api_key: str | None = None, **kwargs: Any) -> Groq:

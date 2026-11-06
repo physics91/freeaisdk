@@ -1,10 +1,13 @@
 """OpenAI-compatible providers and free-tier presets."""
 
-from ._impl import (
+from ._impl import CONNECTION_LIMITS, Completion, Provider, SnapshotSink, Tier, Verdict
+from .gemini import GEMINI_FREE_MODELS, Gemini
+from .groq import GROQ_FREE_MODELS, Groq
+from .openrouter import OPENROUTER_BASE_URL, OpenRouter
+from .platforms import (
     CEREBRAS_TRIAL_MODELS,
     CLOUDFLARE_FREE_MODELS,
     COHERE_TRIAL_MODELS,
-    CONNECTION_LIMITS,
     NVIDIA,
     NVIDIA_FREE_MODELS,
     OVH,
@@ -15,19 +18,11 @@ from ._impl import (
     Cerebras,
     Cloudflare,
     Cohere,
-    Completion,
     Kilo,
     Mistral,
-    Provider,
     Requesty,
     SambaNova,
-    SnapshotSink,
-    Tier,
-    Verdict,
 )
-from .gemini import GEMINI_FREE_MODELS, Gemini
-from .groq import GROQ_FREE_MODELS, Groq
-from .openrouter import OPENROUTER_BASE_URL, OpenRouter
 from .presets import PRESETS, Preset, cerebras, gemini, groq, mistral
 
 __all__ = [
