@@ -2,6 +2,7 @@
 
 import asyncio
 import fnmatch
+import json
 import math
 
 import httpx
@@ -464,6 +465,21 @@ def test_failure_kind_rejected_has_no_cooldown():
     from freeai import CooldownPolicy
 
     assert CooldownPolicy().duration(FailureKind.REJECTED, 3, None) == 0
+
+
+def test_sqlite_flush_stores_compact_json(tmp_path):
+    store = SQLiteStore(tmp_path / "compact.db")
+    try:
+        payload = {"until": 100.0, "failures": 2}
+        with store.transaction() as tx:
+            tx["k"] = payload
+        row = store._conn().execute("SELECT value FROM freeai_state WHERE key = ?", ("k",)).fetchone()
+        assert row is not None
+        assert row[0] == json.dumps(payload, separators=(",", ":"))
+        with store.transaction() as tx:
+            assert tx["k"] == payload
+    finally:
+        store.close()
 
 
 def test_sqlite_keys_with_prefix_matches_iter_and_escapes_like(tmp_path):

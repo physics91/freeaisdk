@@ -190,7 +190,7 @@ class _SQLiteView(MutableMapping[str, Any]):
             self._conn.executemany(
                 "INSERT INTO freeai_state (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [(key, json.dumps(self._cache[key])) for key in self._dirty],
+                [(key, json.dumps(self._cache[key], separators=(",", ":"))) for key in self._dirty],
             )
 
 
