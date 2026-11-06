@@ -188,16 +188,22 @@ class Provider:
         self._owns_ahttp = async_http_client is None
         self._catalog_lock = threading.Lock()
         self._client_lock = threading.Lock()
+        # Freeze the account namespace at construction; changing name/api_key later is unsupported.
+        if not self.api_key:
+            self._state_id = self.name
+        else:
+            self._state_id = f"{self.name}#{hashlib.sha256(self.api_key.encode()).hexdigest()[:12]}"
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(name={self.name!r}, base_url={self.base_url!r}, tier={self.tier!r})"
 
     @property
     def state_id(self) -> str:
-        """Namespace for shared state: cooldowns and quotas belong to an account, i.e. to a key."""
-        if not self.api_key:
-            return self.name
-        return f"{self.name}#{hashlib.sha256(self.api_key.encode()).hexdigest()[:12]}"
+        """Namespace for shared state: cooldowns and quotas belong to an account, i.e. to a key.
+
+        Computed once from the ``name`` and ``api_key`` used at construction.
+        """
+        return self._state_id
 
     # -- catalog ---------------------------------------------------------------------------
 
