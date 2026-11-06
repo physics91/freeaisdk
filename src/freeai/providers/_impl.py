@@ -7,6 +7,7 @@ try next, cooldowns and quota accounting live in the routing core.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import hashlib
 import math
@@ -170,6 +171,8 @@ class Provider:
         self._owns_http = http_client is None
         self._owns_ahttp = async_http_client is None
         self._catalog_lock = threading.Lock()
+        self._acatalog_lock: asyncio.Lock | None = None
+        self._acatalog_loop: asyncio.AbstractEventLoop | None = None
         self._client_lock = threading.Lock()
         # Freeze the account namespace at construction; changing name/api_key later is unsupported.
         if not self.api_key:
@@ -212,16 +215,35 @@ class Provider:
             return self._catalog or ()
 
     async def amodels_snapshot(self, *, refresh: bool = False) -> tuple[ModelInfo, ...]:
-        """Async variant of :meth:`models_snapshot`."""
+        """Async variant of :meth:`models_snapshot`.
+
+        Concurrent cold calls on the same event loop share one discovery (single-flight).
+        """
         if self._static is not None:
             return self._static
-        now = time.monotonic()
-        if self._catalog_stale(now, refresh):
-            try:
-                self._set_catalog(await self._adiscover(), now)
-            except (HTTPError, ValueError, KeyError, TypeError) as exc:
-                self._catalog_failed(exc, now)
-        return self._catalog or ()
+        async with self._async_catalog_lock():
+            now = time.monotonic()
+            if self._catalog_stale(now, refresh):
+                try:
+                    catalog = await self._adiscover()
+                except (HTTPError, ValueError, KeyError, TypeError) as exc:
+                    with self._catalog_lock:
+                        self._catalog_failed(exc, time.monotonic())
+                        return self._catalog or ()
+                with self._catalog_lock:
+                    self._set_catalog(catalog, time.monotonic())
+                    return self._catalog or ()
+            with self._catalog_lock:
+                return self._catalog or ()
+
+    def _async_catalog_lock(self) -> asyncio.Lock:
+        """Event-loop-bound lock for async catalog single-flight; recreate when the loop changes."""
+        loop = asyncio.get_running_loop()
+        with self._catalog_lock:
+            if self._acatalog_lock is None or self._acatalog_loop is not loop:
+                self._acatalog_lock = asyncio.Lock()
+                self._acatalog_loop = loop
+            return self._acatalog_lock
 
     def invalidate(self) -> None:
         """Force rediscovery on the next ``list_models`` call."""
