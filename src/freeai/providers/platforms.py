@@ -15,7 +15,8 @@ from ..errors import FailureKind, FreeAIError, Scope
 from ..limits import RateSnapshot, Window, per_month, rpd, rph, rpm, tpd, tph, tpm
 from ..types import ModelInfo
 from ._catalog import _catalog_items, _catalog_model, _is_zero
-from ._impl import _MONTHLY_RE, _VERIFIED, Provider, Tier, Verdict, _number
+from ._classify import _MONTHLY_RE
+from ._impl import _VERIFIED, Provider, Tier, Verdict, _number
 
 CEREBRAS_TRIAL_MODELS = ("gpt-oss-120b", "qwen-3.8-27b")
 # Free-allocation models, cheapest in neurons first (Llama 3.3 70B burns the daily budget fastest).

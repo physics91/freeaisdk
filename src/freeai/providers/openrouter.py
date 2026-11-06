@@ -11,7 +11,8 @@ from ..errors import FailureKind, Scope
 from ..limits import RateSnapshot
 from ..types import ModelInfo
 from ._catalog import _catalog_items, _catalog_model, _is_zero_priced
-from ._impl import Provider, Tier, Verdict, _metadata
+from ._classify import _metadata
+from ._impl import Provider, Tier, Verdict
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _PLATFORM_LIMIT_HEADERS = frozenset({"x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"})
