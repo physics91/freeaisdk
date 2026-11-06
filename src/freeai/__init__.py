@@ -12,7 +12,7 @@ from .errors import (
     Scope,
     StreamInterrupted,
 )
-from .limits import CooldownPolicy, Cost, Limit, RateSnapshot, RetryBudget, per_month, rpd, rph, rpm, tpd, tph, tpm
+from .limits import CooldownPolicy, Cost, Limit, RateSnapshot, per_month, rpd, rph, rpm, tpd, tph, tpm
 from .providers import (
     NVIDIA,
     OVH,
@@ -36,6 +36,7 @@ from .providers import (
     groq,
     mistral,
 )
+from .retry import RetryBudget
 from .state import MemoryStore, SQLiteStore, StateStore
 from .types import Attempt, ChatResponse, ModelInfo, Requirements, StreamChunk
 

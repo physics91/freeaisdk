@@ -1,7 +1,7 @@
-"""Quota windows, cooldowns, and the in-process retry budget.
+"""Quota windows and cooldowns shared through a store transaction (see ``state.py``).
 
-Window and cooldown state is read and written through a store transaction (see ``state.py``) so
-several processes can share it. Routing health scores live in :mod:`freeai.health`.
+Routing health scores live in :mod:`freeai.health`. The failover retry throttle lives in
+:mod:`freeai.retry` (re-exported here as :class:`RetryBudget` for compatibility).
 """
 
 from __future__ import annotations
@@ -10,13 +10,14 @@ import fnmatch
 import math
 import re
 from collections.abc import Iterable, MutableMapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Literal
 
 from ._http import _zone
 from .errors import FailureKind
+from .retry import RetryBudget as RetryBudget
 
 Window = Literal["minute", "hour", "day", "month"]
 Unit = Literal["requests", "tokens"]
@@ -458,32 +459,3 @@ def _next_boundary(per: Window, now: float, tz: str) -> float:
         year, month = (moment.year + 1, 1) if moment.month == 12 else (moment.year, moment.month + 1)
         start = datetime(year, month, 1, tzinfo=zone)
     return start.timestamp()
-
-
-# -- retry budget (in-process) -----------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class RetryBudget:
-    """gRPC-style retry throttle: server failures spend a token, successes earn ``token_ratio``.
-
-    While fewer than half the tokens remain, a request stops failing over after a server failure,
-    so an upstream outage does not turn every call into a sweep over every free endpoint.
-    """
-
-    max_tokens: float = 10.0
-    token_ratio: float = 0.1
-    tokens: float = field(default=-1.0)
-
-    def __post_init__(self) -> None:
-        if self.tokens < 0:
-            self.tokens = self.max_tokens
-
-    def allows_retry(self) -> bool:
-        return self.tokens > self.max_tokens / 2
-
-    def on_failure(self) -> None:
-        self.tokens = max(0.0, self.tokens - 1.0)
-
-    def on_success(self) -> None:
-        self.tokens = min(self.max_tokens, self.tokens + self.token_ratio)

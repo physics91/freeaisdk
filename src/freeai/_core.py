@@ -41,7 +41,6 @@ from .limits import (
     Cost,
     Limit,
     RateSnapshot,
-    RetryBudget,
     State,
     _compiled_globs,
     cooldown_fail,
@@ -55,6 +54,7 @@ from .limits import (
     quota_ready_at,
 )
 from .providers import Provider
+from .retry import RetryBudget
 from .state import MemoryStore, StateStore
 from .types import Attempt, ChatResponse, ModelInfo, Requirements
 
