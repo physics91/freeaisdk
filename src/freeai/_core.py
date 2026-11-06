@@ -272,9 +272,9 @@ class Router:
             self._turn += 1
             return turn
 
-    def order(self, request: Request, pools: Mapping[str, list[ModelInfo]], *, turn: int) -> list[ModelInfo]:
+    def order(self, request: Request, pools: Mapping[str, Sequence[ModelInfo]], *, turn: int) -> list[ModelInfo]:
         """Candidates for ``request`` in the order they will be tried (ignoring cooldowns)."""
-        pool = [m for provider in self.providers for m in pools.get(provider.name, [])]
+        pool = [m for provider in self.providers for m in pools.get(provider.name, ())]
         if request.models:  # explicit choice overrides the default exclusions
             pool = [m for m in pool if _rank(m, request.models) < len(request.models)]
         else:

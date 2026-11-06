@@ -43,3 +43,13 @@ def test_catalog_is_cached(server: FakeServer):
     assert server.catalog_fetches == 1
     ai.models(refresh=True)
     assert server.catalog_fetches == 2
+
+
+def test_list_models_copy_isolates_cache_and_snapshot_is_shared(server: FakeServer):
+    provider = OpenRouter(api_key="k", http_client=server.client())
+    first = provider.list_models()
+    snapshot = provider.models_snapshot()
+    first.clear()
+    assert provider.list_models()  # public copy mutation must not empty the cache
+    assert provider.models_snapshot() is snapshot  # routing reuses the immutable snapshot
+    assert tuple(provider.list_models()) == snapshot

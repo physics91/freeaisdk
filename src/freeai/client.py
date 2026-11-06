@@ -162,8 +162,10 @@ class _ClientBase:
         return self._router.prepare(messages, system, model, require, min_context, params)
 
     @staticmethod
-    def _pools_from(results: Iterable[tuple[Provider, list[ModelInfo] | FreeAIError]]) -> dict[str, list[ModelInfo]]:
-        pools: dict[str, list[ModelInfo]] = {}
+    def _pools_from(
+        results: Iterable[tuple[Provider, Sequence[ModelInfo] | FreeAIError]],
+    ) -> dict[str, Sequence[ModelInfo]]:
+        pools: dict[str, Sequence[ModelInfo]] = {}
         for provider, result in results:
             if isinstance(result, FreeAIError):
                 logger.warning("skipping provider %s: %s", provider.name, result)
@@ -322,11 +324,11 @@ class FreeAI(_ClientBase):
 
     # -- internals -------------------------------------------------------------------------
 
-    def _pools(self) -> dict[str, list[ModelInfo]]:
-        results: list[tuple[Provider, list[ModelInfo] | FreeAIError]] = []
+    def _pools(self) -> dict[str, Sequence[ModelInfo]]:
+        results: list[tuple[Provider, Sequence[ModelInfo] | FreeAIError]] = []
         for provider in self.providers:
             try:
-                results.append((provider, provider.list_models()))
+                results.append((provider, provider.models_snapshot()))
             except FreeAIError as exc:
                 results.append((provider, exc))
         return self._pools_from(results)

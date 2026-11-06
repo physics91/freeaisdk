@@ -190,10 +190,10 @@ class AsyncFreeAI(_ClientBase):
 
     # -- internals -------------------------------------------------------------------------
 
-    async def _pools(self) -> dict[str, list[ModelInfo]]:
-        async def fetch(provider: Provider) -> list[ModelInfo] | FreeAIError:
+    async def _pools(self) -> dict[str, Sequence[ModelInfo]]:
+        async def fetch(provider: Provider) -> Sequence[ModelInfo] | FreeAIError:
             try:
-                return await provider.alist_models()
+                return await provider.amodels_snapshot()
             except FreeAIError as exc:
                 return exc
 

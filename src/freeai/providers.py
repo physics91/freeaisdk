@@ -178,8 +178,8 @@ class Provider:
         self.timeout = timeout
         self.catalog_ttl = catalog_ttl
         chosen = models if models is not None else self.default_models
-        self._static = None if chosen is None else [self._as_model(m) for m in chosen]
-        self._catalog: list[ModelInfo] | None = None
+        self._static = None if chosen is None else tuple(self._as_model(m) for m in chosen)
+        self._catalog: tuple[ModelInfo, ...] | None = None
         self._catalog_at = -math.inf
         self._extra_headers = dict(headers or {})
         self._http = http_client
@@ -202,8 +202,17 @@ class Provider:
     # -- catalog ---------------------------------------------------------------------------
 
     def list_models(self, *, refresh: bool = False) -> list[ModelInfo]:
+        """Public catalog copy; callers may mutate the returned list safely."""
+        return list(self.models_snapshot(refresh=refresh))
+
+    async def alist_models(self, *, refresh: bool = False) -> list[ModelInfo]:
+        """Public catalog copy; callers may mutate the returned list safely."""
+        return list(await self.amodels_snapshot(refresh=refresh))
+
+    def models_snapshot(self, *, refresh: bool = False) -> tuple[ModelInfo, ...]:
+        """Cached catalog for routing. Treat as immutable; use :meth:`list_models` to copy."""
         if self._static is not None:
-            return list(self._static)
+            return self._static
         with self._catalog_lock:
             now = time.monotonic()
             if self._catalog_stale(now, refresh):
@@ -211,18 +220,19 @@ class Provider:
                     self._set_catalog(self._discover(), now)
                 except (HTTPError, ValueError, KeyError, TypeError) as exc:
                     self._catalog_failed(exc, now)
-            return list(self._catalog or [])
+            return self._catalog or ()
 
-    async def alist_models(self, *, refresh: bool = False) -> list[ModelInfo]:
+    async def amodels_snapshot(self, *, refresh: bool = False) -> tuple[ModelInfo, ...]:
+        """Async variant of :meth:`models_snapshot`."""
         if self._static is not None:
-            return list(self._static)
+            return self._static
         now = time.monotonic()
         if self._catalog_stale(now, refresh):
             try:
                 self._set_catalog(await self._adiscover(), now)
             except (HTTPError, ValueError, KeyError, TypeError) as exc:
                 self._catalog_failed(exc, now)
-        return list(self._catalog or [])
+        return self._catalog or ()
 
     def invalidate(self) -> None:
         """Force rediscovery on the next ``list_models`` call."""
@@ -232,7 +242,7 @@ class Provider:
         return refresh or self._catalog is None or now - self._catalog_at > self.catalog_ttl
 
     def _set_catalog(self, catalog: list[ModelInfo], now: float) -> None:
-        self._catalog = catalog
+        self._catalog = tuple(catalog)
         self._catalog_at = now
 
     def _catalog_failed(self, exc: Exception, now: float) -> None:
