@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from ..errors import FreeAIError
 from ._impl import Provider, Tier
 from .gemini import Gemini
 from .groq import Groq
@@ -59,3 +61,20 @@ PRESETS: dict[str, Preset] = {
     "cerebras": Preset(("CEREBRAS_API_KEY",), Cerebras, "trial"),
     "mistral": Preset(("MISTRAL_API_KEY",), Mistral, "paid"),
 }
+
+
+def build_from_env(tiers: Iterable[Tier], include_keyless: bool) -> list[Provider]:
+    """Providers for every preset whose environment variables are set (see ``from_env``)."""
+    allowed = set(tiers)
+    providers: list[Provider] = []
+    for preset in PRESETS.values():
+        if preset.tier not in allowed:
+            continue
+        keyed = bool(preset.env) and all(os.environ.get(name) for name in preset.env)
+        if keyed or (preset.keyless and include_keyless):
+            providers.append(preset.factory())
+    if not providers:
+        names = sorted({name for p in PRESETS.values() if p.tier in allowed for name in p.env})
+        hint = "" if include_keyless else " (or pass include_keyless=True for anonymous endpoints)"
+        raise FreeAIError(f"no provider API key found; set one of: {', '.join(names)}{hint}")
+    return providers

@@ -20,14 +20,13 @@ from ._core import (
     Router,
     RouterOptions,
     Wait,
-    build_from_env,
     empty_stream,
     to_chunk,
 )
 from ._http import logger
 from .errors import FailureKind, FreeAIError, OutputLimitError, ProviderFailure, StreamInterrupted
 from .limits import Cost
-from .providers import Provider, Tier
+from .providers import Provider, Tier, build_from_env
 from .types import ChatResponse, ModelInfo, Requirements, StreamChunk
 
 __all__ = ["DEFAULT_EXCLUDE", "FreeAI", "chat", "stream"]

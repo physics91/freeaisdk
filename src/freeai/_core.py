@@ -8,7 +8,6 @@ perform the network calls this module asks for.
 from __future__ import annotations
 
 import math
-import os
 import random
 import secrets
 import threading
@@ -33,7 +32,6 @@ from .errors import (
     BillingWarning,
     ExhaustedError,
     FailureKind,
-    FreeAIError,
     ProviderFailure,
     Scope,
 )
@@ -56,7 +54,7 @@ from .limits import (
     quota_observe,
     quota_ready_at,
 )
-from .providers import PRESETS, OpenRouter, Provider, Tier
+from .providers import OpenRouter, Provider
 from .state import MemoryStore, StateStore
 from .types import Attempt, ChatResponse, ModelInfo, Requirements
 
@@ -72,7 +70,6 @@ __all__ = [
     "Router",
     "RouterOptions",
     "Wait",
-    "build_from_env",
     "empty_stream",
     "to_chunk",
     "to_response",
@@ -783,23 +780,6 @@ class Plan:
         self.attempts.append(attempt)
         if self.router.on_attempt is not None:
             self.router.on_attempt(attempt)
-
-
-def build_from_env(tiers: Iterable[Tier], include_keyless: bool) -> list[Provider]:
-    """Providers for every preset whose environment variables are set (see ``from_env``)."""
-    allowed = set(tiers)
-    providers: list[Provider] = []
-    for preset in PRESETS.values():
-        if preset.tier not in allowed:
-            continue
-        keyed = bool(preset.env) and all(os.environ.get(name) for name in preset.env)
-        if keyed or (preset.keyless and include_keyless):
-            providers.append(preset.factory())
-    if not providers:
-        names = sorted({name for p in PRESETS.values() if p.tier in allowed for name in p.env})
-        hint = "" if include_keyless else " (or pass include_keyless=True for anonymous endpoints)"
-        raise FreeAIError(f"no provider API key found; set one of: {', '.join(names)}{hint}")
-    return providers
 
 
 # -- helpers -----------------------------------------------------------------------------------

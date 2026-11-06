@@ -23,7 +23,7 @@ from .platforms import (
     Requesty,
     SambaNova,
 )
-from .presets import PRESETS, Preset, cerebras, gemini, groq, mistral
+from .presets import PRESETS, Preset, build_from_env, cerebras, gemini, groq, mistral
 
 __all__ = [
     "CEREBRAS_TRIAL_MODELS",
@@ -57,6 +57,7 @@ __all__ = [
     "SnapshotSink",
     "Tier",
     "Verdict",
+    "build_from_env",
     "cerebras",
     "gemini",
     "groq",
