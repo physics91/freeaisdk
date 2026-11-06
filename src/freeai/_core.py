@@ -27,6 +27,8 @@ from ._messages import (
     to_chunk,
     to_response,
 )
+from ._order import OrderPolicy
+from ._order import _rank as _rank  # re-export for ``from freeai._core import _rank``
 from .errors import (
     SKIP_FOR_REQUEST,
     BillingWarning,
@@ -42,7 +44,6 @@ from .limits import (
     Limit,
     RateSnapshot,
     State,
-    _compiled_globs,
     cooldown_fail,
     cooldown_failures,
     cooldown_ready_at,
@@ -232,6 +233,17 @@ class Router:
         self._by_name = {p.name: p for p in self.providers}
         self._rng = rng or random.Random()
         self._lock = threading.Lock()
+        self._order = OrderPolicy(
+            providers=self.providers,
+            prefer=self.prefer,
+            exclude=self.exclude,
+            strategy=self.strategy,
+            allow_training=self.allow_training,
+            by_name=self._by_name,
+            health=self.health,
+            rng=self._rng,
+            lock=self._lock,
+        )
         self._turn = 0
         self._warmed: set[str] = set()
         self._probing: set[str] = set()
@@ -288,49 +300,7 @@ class Router:
 
     def order(self, request: Request, pools: Mapping[str, Sequence[ModelInfo]], *, turn: int) -> list[ModelInfo]:
         """Candidates for ``request`` in the order they will be tried (ignoring cooldowns)."""
-        pool = [m for provider in self.providers for m in pools.get(provider.name, ())]
-        if request.models:  # explicit choice overrides the default exclusions
-            pool = [m for m in pool if _rank(m, request.models) < len(request.models)]
-        else:
-            pool = [m for m in pool if _rank(m, self.exclude) == len(self.exclude)]
-        pool = [m for m in pool if m.satisfies(request.requirements) and self._privacy_ok(m)]
-
-        patterns = request.models or request.prefer or self.prefer
-        groups: dict[tuple[bool, int], list[ModelInfo]] = {}
-        for m in pool:
-            groups.setdefault((m.is_router, _rank(m, patterns)), []).append(m)
-        ordered: list[ModelInfo] = []
-        for key in sorted(groups):
-            ordered.extend(self._arrange(groups[key], turn))
-        return ordered
-
-    def _privacy_ok(self, model: ModelInfo) -> bool:
-        if self.allow_training:
-            return True
-        return model.trains_on_prompts is False or self._by_name[model.provider].can_deny_training
-
-    def _arrange(self, group: list[ModelInfo], turn: int) -> list[ModelInfo]:
-        if self.strategy == "random":
-            group = group[:]
-            self._rng.shuffle(group)
-        elif self.strategy == "round_robin" and group:
-            offset = turn % len(group)
-            group = group[offset:] + group[:offset]
-        elif self.strategy == "health":
-            group = self._power_of_two(group)
-        return group
-
-    def _power_of_two(self, group: list[ModelInfo]) -> list[ModelInfo]:
-        """Order by repeated power-of-two-choices on the health score (load spreads, bad models sink)."""
-        with self._lock:
-            scores = {m.key: self.health.score(m.key) for m in group}
-        remaining = group[:]
-        ordered: list[ModelInfo] = []
-        while len(remaining) > 1:
-            a, b = self._rng.sample(range(len(remaining)), 2)
-            pick = a if scores[remaining[a].key] >= scores[remaining[b].key] else b
-            ordered.append(remaining.pop(pick))
-        return ordered + remaining
+        return self._order.order(request, pools, turn=turn)
 
     def plan(
         self, request: Request, ordered: list[ModelInfo], *, max_attempts: int | None, deadline: float | None
@@ -863,11 +833,3 @@ def _total_tokens(usage: Mapping[str, Any] | None) -> float | None:
     if all(isinstance(p, (int, float)) and not isinstance(p, bool) for p in parts):
         return float(sum(parts))  # type: ignore[arg-type]
     return None
-
-
-def _rank(model: ModelInfo, patterns: Sequence[str]) -> int:
-    """Index of the first pattern matching the model's id or provider:id key, else len(patterns)."""
-    for index, matcher in enumerate(_compiled_globs(patterns)):
-        if matcher.match(model.key) is not None or matcher.match(model.id) is not None:
-            return index
-    return len(patterns)
