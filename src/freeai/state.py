@@ -150,19 +150,38 @@ class _SQLiteView(MutableMapping[str, Any]):
         return sum(1 for _ in self)
 
     def keys_with_prefix(self, prefix: str) -> Iterator[str]:
-        """Keys that start with ``prefix``, including unflushed cache overlays.
-
-        Uses a SQL ``LIKE`` scan so callers need not load the whole table, then re-checks
-        ``str.startswith`` because SQLite's default ``LIKE`` is ASCII case-insensitive.
-        """
+        """Keys that start with ``prefix``, including unflushed cache overlays."""
         pattern = _like_prefix(prefix)
         stored = {
             row[0]
             for row in self._conn.execute("SELECT key FROM freeai_state WHERE key LIKE ? ESCAPE '\\'", (pattern,))
             if row[0].startswith(prefix)
         }
+        return iter(self._prefix_overlay(prefix, stored))
+
+    def items_with_prefix(self, prefix: str) -> Iterator[tuple[str, Any]]:
+        """``(key, value)`` pairs for ``prefix``, one SQL scan plus cache overlays.
+
+        Order matches :meth:`keys_with_prefix`. Values already in the write-back cache win over
+        the row just read from SQLite.
+        """
+        pattern = _like_prefix(prefix)
+        stored: set[str] = set()
+        for key, raw in self._conn.execute(
+            "SELECT key, value FROM freeai_state WHERE key LIKE ? ESCAPE '\\'", (pattern,)
+        ):
+            if not key.startswith(prefix) or key in self._deleted:
+                continue
+            stored.add(key)
+            if key not in self._cache:
+                self._cache[key] = json.loads(raw)
+        keys = self._prefix_overlay(prefix, stored)
+        return iter((key, self._cache[key]) for key in keys)
+
+    def _prefix_overlay(self, prefix: str, stored: set[str]) -> list[str]:
+        """Sorted keys under ``prefix`` with the same overlay contract as ``__iter__``."""
         cached = {key for key in self._cache if key.startswith(prefix)}
-        return iter(sorted((stored | cached) - self._deleted))
+        return sorted((stored | cached) - self._deleted)
 
     def flush(self) -> None:
         if self._deleted:

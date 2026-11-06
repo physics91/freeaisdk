@@ -466,7 +466,10 @@ def test_sqlite_keys_with_prefix_matches_iter_and_escapes_like(tmp_path):
             prefix = "cd:m:sid|"
             assert list(tx.keys_with_prefix(prefix)) == ["cd:m:sid|alpha", "cd:m:sid|beta"]
             assert sorted(k for k in tx if k.startswith(prefix)) == list(tx.keys_with_prefix(prefix))
+            assert [k for k, _ in tx.items_with_prefix(prefix)] == list(tx.keys_with_prefix(prefix))
             assert cooldown_snapshot(tx, prefix, now=50.0) == {"alpha": 50.0, "beta": 50.0}
+            for key, entry in tx.items_with_prefix(prefix):
+                assert entry == tx[key]
 
             assert list(tx.keys_with_prefix("plain%")) == ["plain%one"]
             assert "plainXone" not in tx.keys_with_prefix("plain%")
@@ -477,6 +480,8 @@ def test_sqlite_keys_with_prefix_matches_iter_and_escapes_like(tmp_path):
             del tx["cd:m:sid|alpha"]
             assert list(tx.keys_with_prefix(prefix)) == ["cd:m:sid|beta", "cd:m:sid|dirty"]
             assert sorted(k for k in tx if k.startswith(prefix)) == list(tx.keys_with_prefix(prefix))
+            assert [k for k, _ in tx.items_with_prefix(prefix)] == list(tx.keys_with_prefix(prefix))
+            assert cooldown_snapshot(tx, prefix, now=50.0) == {"beta": 50.0, "dirty": 50.0}
     finally:
         store.close()
 
