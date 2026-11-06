@@ -22,10 +22,10 @@ from typing import Any, ClassVar, Literal
 from ._http import (
     AsyncClient,
     Client,
+    EventReader,
     Headers,
     HTTPError,
     Limits,
-    SSEDecoder,
     Timeout,
     TransportError,
     _zone,
@@ -33,6 +33,7 @@ from ._http import (
     embedded_header_names,
     error_object,
     error_text,
+    is_event_stream,
     logger,
     parse_reset,
     retry_hint,
@@ -350,7 +351,7 @@ class Provider:
                 "POST", url, json=body, headers=req_headers, **self._timeout_args(timeout, first_token_timeout)
             ) as response:
                 status, resp_headers = response.status_code, response.headers
-                if status != 200 or not _is_event_stream(resp_headers):
+                if status != 200 or not is_event_stream(resp_headers):
                     response.read()
                     events = self._stream_preamble(status, resp_headers, decode(response), on_snapshots)
                     if events is None:
@@ -358,7 +359,9 @@ class Provider:
                     yield from events
                     return
                 self._stream_preamble(status, resp_headers, None, on_snapshots)
-                reader = _EventReader(self, resp_headers, first_token_timeout)
+                reader = EventReader(
+                    self.name, resp_headers, first_token_timeout, classify=self.classify
+                )
                 for line in response.iter_lines():
                     yield from reader.feed(line)
                     if reader.done:
@@ -383,7 +386,7 @@ class Provider:
                 "POST", url, json=body, headers=req_headers, **self._timeout_args(timeout, first_token_timeout)
             ) as response:
                 status, resp_headers = response.status_code, response.headers
-                if status != 200 or not _is_event_stream(resp_headers):
+                if status != 200 or not is_event_stream(resp_headers):
                     await response.aread()
                     events = self._stream_preamble(status, resp_headers, decode(response), on_snapshots)
                     if events is None:
@@ -392,7 +395,9 @@ class Provider:
                         yield event
                     return
                 self._stream_preamble(status, resp_headers, None, on_snapshots)
-                reader = _EventReader(self, resp_headers, first_token_timeout)
+                reader = EventReader(
+                    self.name, resp_headers, first_token_timeout, classify=self.classify
+                )
                 async for line in response.aiter_lines():
                     for event in reader.feed(line):
                         yield event
@@ -419,7 +424,7 @@ class Provider:
             raise self.classify(status, headers, body)
         if on_snapshots is not None:
             on_snapshots(self.rate_snapshots(headers))
-        if not _is_event_stream(headers):
+        if not is_event_stream(headers):
             return list(self._json_as_stream(headers, body))
         return None
 
@@ -599,55 +604,6 @@ class Provider:
     def _require_key(self) -> None:
         if not self.api_key and not self.keyless:
             raise ProviderFailure(FailureKind.AUTH, f"{self.name}: missing API key")
-
-
-class _EventReader:
-    """Turns SSE lines into chunk dicts; raises on error events and on a missed first-token deadline."""
-
-    def __init__(
-        self,
-        provider: Provider,
-        headers: Headers,
-        first_token_timeout: float | None,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._provider = provider
-        self._headers = headers
-        self._decoder = SSEDecoder()
-        self._clock = clock
-        self._started = clock()
-        self._first_token_timeout = first_token_timeout
-        self._seen = False
-
-    @property
-    def done(self) -> bool:
-        return self._decoder.done
-
-    def feed(self, line: str) -> list[dict[str, Any]]:
-        events = self._accept(self._decoder.feed(line))
-        # Keep-alive comments (": OPENROUTER PROCESSING") keep the socket busy without output.
-        timeout = self._first_token_timeout
-        if not self._seen and timeout is not None and self._clock() - self._started > timeout:
-            raise ProviderFailure(
-                FailureKind.UNAVAILABLE,
-                f"{self._provider.name}: no streamed output within {self._first_token_timeout:g}s",
-            )
-        return events
-
-    def finish(self) -> list[dict[str, Any]]:
-        return self._accept(self._decoder.flush())
-
-    def _accept(self, items: list[Any]) -> list[dict[str, Any]]:
-        events: list[dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            # Mid-stream errors arrive as an SSE event while the HTTP status stays 200.
-            if error_object(item):
-                raise self._provider.classify(200, self._headers, item)
-            self._seen = True
-            events.append(item)
-        return events
 
 
 # -- OpenRouter --------------------------------------------------------------------------------
@@ -1367,10 +1323,6 @@ def _number(value: str) -> float | None:
         return float(value)
     except ValueError:
         return None
-
-
-def _is_event_stream(headers: Headers) -> bool:
-    return "text/event-stream" in headers.get("content-type", "text/event-stream")
 
 
 def _effective_status(error: dict[str, Any], status: int) -> int:

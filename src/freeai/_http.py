@@ -10,11 +10,13 @@ import json
 import logging
 import re
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from typing import Any
 
 import httpx
+
+from .errors import FailureKind, ProviderFailure
 
 Client = httpx.Client
 AsyncClient = httpx.AsyncClient
@@ -250,6 +252,65 @@ def iter_sse(lines: Iterable[str]) -> Iterator[Any]:
         if decoder.done:
             return
     yield from decoder.flush()
+
+
+def is_event_stream(headers: Headers) -> bool:
+    return "text/event-stream" in headers.get("content-type", "text/event-stream")
+
+
+class EventReader:
+    """Turns SSE lines into chunk dicts; raises on error events and on a missed first-token deadline.
+
+    ``classify`` is the provider's error policy (mid-stream errors arrive with HTTP 200).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        headers: Headers,
+        first_token_timeout: float | None,
+        *,
+        classify: Callable[[int, Headers, Any], ProviderFailure],
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._name = name
+        self._headers = headers
+        self._classify = classify
+        self._decoder = SSEDecoder()
+        self._clock = clock
+        self._started = clock()
+        self._first_token_timeout = first_token_timeout
+        self._seen = False
+
+    @property
+    def done(self) -> bool:
+        return self._decoder.done
+
+    def feed(self, line: str) -> list[dict[str, Any]]:
+        events = self._accept(self._decoder.feed(line))
+        # Keep-alive comments (": OPENROUTER PROCESSING") keep the socket busy without output.
+        timeout = self._first_token_timeout
+        if not self._seen and timeout is not None and self._clock() - self._started > timeout:
+            raise ProviderFailure(
+                FailureKind.UNAVAILABLE,
+                f"{self._name}: no streamed output within {self._first_token_timeout:g}s",
+            )
+        return events
+
+    def finish(self) -> list[dict[str, Any]]:
+        return self._accept(self._decoder.flush())
+
+    def _accept(self, items: list[Any]) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            # Mid-stream errors arrive as an SSE event while the HTTP status stays 200.
+            if error_object(item):
+                raise self._classify(200, self._headers, item)
+            self._seen = True
+            events.append(item)
+        return events
 
 
 _DONE = object()

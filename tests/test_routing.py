@@ -8,7 +8,7 @@ import pytest
 
 from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, RetryBudget
 from freeai._core import Wait
-from freeai.providers import _EventReader
+from freeai._http import EventReader
 
 from .conftest import FakeClock, FakeServer, error, ok, sse
 
@@ -146,14 +146,15 @@ def test_deadline_bounds_waiting_and_http_timeout(clock):
 
 def test_first_token_timeout_counts_only_data_events():
     fake = FakeClock()
-    reader = _EventReader(Provider("p", "https://p.example"), httpx.Headers(), 5.0, clock=fake)
+    provider = Provider("p", "https://p.example")
+    reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake)
     assert reader.feed(": OPENROUTER PROCESSING") == []
     fake.now += 6
     with pytest.raises(Exception, match="no streamed output within 5s"):
         reader.feed(": OPENROUTER PROCESSING")
 
     fake2 = FakeClock()
-    reader = _EventReader(Provider("p", "https://p.example"), httpx.Headers(), 5.0, clock=fake2)
+    reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake2)
     reader.feed('data: {"choices": []}')
     assert reader.feed("") == [{"choices": []}]
     fake2.now += 60
