@@ -448,12 +448,15 @@ class Router:
         with self._lock, self.store.transaction() as tx:
             now = self.clock()
             earliest = math.inf
+            learned_by_sid: dict[str, list[Any]] = {}
             for model in candidates:
                 provider = self._by_name[model.provider]
                 sid = provider.state_id
                 model_key, provider_key = _model_key(sid, model.id), _provider_key(sid)
                 ready = max(cooldown_ready_at(tx, model_key), cooldown_ready_at(tx, provider_key))
-                limits = self._limits(tx, provider, model.id)
+                if sid not in learned_by_sid:
+                    learned_by_sid[sid] = list(tx.get(_learned_key(sid), []))
+                limits = self._limits(tx, provider, model.id, learned=learned_by_sid[sid])
                 cost = self.cost(provider, request)
                 if ready <= now:
                     ready = quota_ready_at(tx, limits, sid, model.id, cost, now, provider.reset_tz)
@@ -477,18 +480,30 @@ class Router:
     def _slots_full(self, provider: Provider) -> bool:
         return provider.max_concurrency is not None and self._inflight.get(provider.name, 0) >= provider.max_concurrency
 
-    def _limits(self, tx: State, provider: Provider, model_id: str) -> list[Limit]:
-        """Declared limits plus those learned from response headers or quota endpoints."""
+    def _limits(
+        self,
+        tx: State,
+        provider: Provider,
+        model_id: str,
+        *,
+        learned: Sequence[Mapping[str, Any]] | None = None,
+    ) -> list[Limit]:
+        """Declared limits plus those learned from response headers or quota endpoints.
+
+        ``learned`` may be preloaded for the provider ``state_id`` within one transaction so
+        :meth:`reserve` does not re-read the registry for every candidate.
+        """
         sid = provider.state_id
         limits = [limit for limit in provider.limits if limit.applies_to(model_id)]
         keys = {limit.key(sid, model_id) for limit in limits}
-        for entry in tx.get(_learned_key(sid), []):
+        entries = learned if learned is not None else tx.get(_learned_key(sid), [])
+        for entry in entries:
             if entry["model"] not in (None, model_id):
                 continue
-            learned = Limit(float(entry["amount"]), entry["per"], entry["unit"], entry["scope"], source="observed")
-            key = learned.key(sid, model_id)
+            observed = Limit(float(entry["amount"]), entry["per"], entry["unit"], entry["scope"], source="observed")
+            key = observed.key(sid, model_id)
             if key not in keys:
-                limits.append(learned)
+                limits.append(observed)
                 keys.add(key)
         return limits
 
