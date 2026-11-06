@@ -363,11 +363,20 @@ class Router:
 
     def observe(self, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]) -> None:
         """Update local quota counters with limit state the platform reported."""
-        snapshots = list(snapshots)
-        if not snapshots:
+        self.observe_many(((provider_name, model_id, snapshots),))
+
+    def observe_many(self, items: Iterable[tuple[str, str, Iterable[RateSnapshot]]]) -> None:
+        """Apply several snapshot batches in one store transaction (empty batches are skipped)."""
+        batches: list[tuple[str, str, list[RateSnapshot]]] = []
+        for provider_name, model_id, snapshots in items:
+            snaps = list(snapshots)
+            if snaps:
+                batches.append((provider_name, model_id, snaps))
+        if not batches:
             return
         with self._lock, self.store.transaction() as tx:
-            self._observe_tx(tx, provider_name, model_id, snapshots)
+            for provider_name, model_id, snaps in batches:
+                self._observe_tx(tx, provider_name, model_id, snaps)
 
     def _observe_tx(
         self, tx: State, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]

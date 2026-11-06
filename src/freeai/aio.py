@@ -209,14 +209,13 @@ class AsyncFreeAI(_ClientBase):
 
     async def _observe_warmups(self, warmups: Sequence[Provider]) -> None:
         """Fetch each provider's quota once; parallelize only when several may hit the network."""
-        router = self._router
         if len(warmups) <= 1 or not any(provider.quota_may_fetch() for provider in warmups):
-            for provider in warmups:
-                router.observe(provider.name, "*", await provider.arefresh_quota())
-            return
-        snapshots = await asyncio.gather(*(provider.arefresh_quota() for provider in warmups))
-        for provider, snaps in zip(warmups, snapshots, strict=True):
-            router.observe(provider.name, "*", snaps)
+            snapshots = [await provider.arefresh_quota() for provider in warmups]
+        else:
+            snapshots = await asyncio.gather(*(provider.arefresh_quota() for provider in warmups))
+        self._router.observe_many(
+            (provider.name, "*", snaps) for provider, snaps in zip(warmups, snapshots, strict=True)
+        )
 
     async def _stream(
         self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None

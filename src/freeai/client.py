@@ -352,16 +352,15 @@ class FreeAI(_ClientBase):
 
     def _observe_warmups(self, warmups: Sequence[Provider]) -> None:
         """Fetch each provider's quota once; parallelize only when several may hit the network."""
-        router = self._router
         if len(warmups) <= 1 or not any(provider.quota_may_fetch() for provider in warmups):
-            for provider in warmups:
-                router.observe(provider.name, "*", provider.refresh_quota())
-            return
-        workers = min(len(warmups), 32, (os.cpu_count() or 1) + 4)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            snapshots = list(pool.map(lambda provider: provider.refresh_quota(), warmups))
-        for provider, snaps in zip(warmups, snapshots, strict=True):
-            router.observe(provider.name, "*", snaps)
+            snapshots = [provider.refresh_quota() for provider in warmups]
+        else:
+            workers = min(len(warmups), 32, (os.cpu_count() or 1) + 4)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                snapshots = list(pool.map(lambda provider: provider.refresh_quota(), warmups))
+        self._router.observe_many(
+            (provider.name, "*", snaps) for provider, snaps in zip(warmups, snapshots, strict=True)
+        )
 
     def _stream(
         self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None
