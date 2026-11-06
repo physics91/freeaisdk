@@ -1,4 +1,4 @@
-"""Provider mixin: lazy httpx clients, timeouts, and close lifecycle."""
+"""Provider mixin: lazy httpx clients, timeouts, headers, and close lifecycle."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from .._http import AsyncClient, Client, Limits, Timeout
+from ..errors import FailureKind, ProviderFailure
 
 _CONNECT_TIMEOUT = 5.0
 # httpx defaults (100 connections, 20 kept alive) queue a busy provider's requests behind the pool and
@@ -14,7 +15,30 @@ CONNECTION_LIMITS = Limits(max_connections=1000, max_keepalive_connections=100)
 
 
 class TransportMixin:
-    """HTTP client lifecycle. Expects Provider fields set in ``__init__`` (``timeout``, clients, locks)."""
+    """HTTP client lifecycle and shared GET helpers.
+
+    Expects Provider fields set in ``__init__`` (``timeout``, ``base_url``, clients, locks, keys).
+    """
+
+    def _headers(self) -> dict[str, str]:
+        headers = dict(self._extra_headers)
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _require_key(self) -> None:
+        if not self.api_key and not self.keyless:
+            raise ProviderFailure(FailureKind.AUTH, f"{self.name}: missing API key")
+
+    def _get_json(self, path: str) -> Any:
+        response = self._client().get(f"{self.base_url}{path}", headers=self._headers())
+        response.raise_for_status()
+        return response.json()
+
+    async def _aget_json(self, path: str) -> Any:
+        response = await self._async_client().get(f"{self.base_url}{path}", headers=self._headers())
+        response.raise_for_status()
+        return response.json()
 
     def close(self) -> None:
         if self._owns_http and self._http is not None:

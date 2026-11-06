@@ -172,25 +172,13 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
         """
         return self._state_id
 
-    # -- HTTP helpers (catalog: CatalogMixin; chat I/O: RequestMixin) ----------------------
-
-    def _get_json(self, path: str) -> Any:
-        response = self._client().get(f"{self.base_url}{path}", headers=self._headers())
-        response.raise_for_status()
-        return response.json()
-
-    async def _aget_json(self, path: str) -> Any:
-        response = await self._async_client().get(f"{self.base_url}{path}", headers=self._headers())
-        response.raise_for_status()
-        return response.json()
+    # -- HTTP GET/headers: TransportMixin; catalog/chat: CatalogMixin / RequestMixin ------
 
     # -- quota fetch: QuotaMixin; header snapshots stay here (used by classify / chat I/O) --
 
     def rate_snapshots(self, headers: Mapping[str, str]) -> list[RateSnapshot]:
         """Limit state from ``x-ratelimit-{limit,remaining,reset}-{requests,tokens}[-window]`` headers."""
         return rate_snapshots_from_headers(headers, self.header_windows, self.header_scope)
-
-    # -- lifecycle / clients: TransportMixin ----------------------------------------------
 
     # -- error classification --------------------------------------------------------------
 
@@ -238,18 +226,6 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
         if _MONTHLY_RE.search(error_text(error)):
             return seconds_until("month", time.time(), self.reset_tz)
         return seconds_until_midnight(self.reset_tz)
-
-    # -- helpers ---------------------------------------------------------------------------
-
-    def _headers(self) -> dict[str, str]:
-        headers = dict(self._extra_headers)
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        return headers
-
-    def _require_key(self) -> None:
-        if not self.api_key and not self.keyless:
-            raise ProviderFailure(FailureKind.AUTH, f"{self.name}: missing API key")
 
 
 _VERIFIED = "2026-11-06"
