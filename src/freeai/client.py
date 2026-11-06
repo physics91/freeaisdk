@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from typing import Any, Self, Unpack
 
@@ -325,13 +327,21 @@ class FreeAI(_ClientBase):
     # -- internals -------------------------------------------------------------------------
 
     def _pools(self) -> dict[str, Sequence[ModelInfo]]:
-        results: list[tuple[Provider, Sequence[ModelInfo] | FreeAIError]] = []
-        for provider in self.providers:
-            try:
-                results.append((provider, provider.models_snapshot()))
-            except FreeAIError as exc:
-                results.append((provider, exc))
-        return self._pools_from(results)
+        providers = self.providers
+        # Warm catalogs stay sequential (no thread hop). Cold multi-provider fetches match async gather.
+        if len(providers) <= 1 or not any(provider.catalog_may_fetch() for provider in providers):
+            return self._pools_from((provider, self._snapshot(provider)) for provider in providers)
+        workers = min(len(providers), 32, (os.cpu_count() or 1) + 4)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(self._snapshot, providers))
+        return self._pools_from(zip(providers, results, strict=True))
+
+    @staticmethod
+    def _snapshot(provider: Provider) -> Sequence[ModelInfo] | FreeAIError:
+        try:
+            return provider.models_snapshot()
+        except FreeAIError as exc:
+            return exc
 
     def _plan(self, request: Request, max_attempts: int | None, deadline: float | None) -> Plan:
         router = self._router

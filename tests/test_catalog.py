@@ -1,4 +1,7 @@
-from freeai import FreeAI, OpenRouter
+import time
+
+from freeai import FreeAI, OpenRouter, Provider
+from freeai.types import ModelInfo
 
 from .conftest import FakeServer
 
@@ -53,3 +56,22 @@ def test_list_models_copy_isolates_cache_and_snapshot_is_shared(server: FakeServ
     assert provider.list_models()  # public copy mutation must not empty the cache
     assert provider.models_snapshot() is snapshot  # routing reuses the immutable snapshot
     assert tuple(provider.list_models()) == snapshot
+
+
+def test_sync_pools_fetches_cold_catalogs_in_parallel():
+    delay = 0.15
+
+    class Slow(Provider):
+        def __init__(self, name: str) -> None:
+            super().__init__(name, "https://example.test", api_key="k", keyless=False)
+
+        def _discover(self) -> list[ModelInfo]:
+            time.sleep(delay)
+            return [ModelInfo(self.name, "m")]
+
+    ai = FreeAI([Slow("a"), Slow("b")], max_wait=0.0)
+    started = time.perf_counter()
+    pools = ai._pools()
+    elapsed = time.perf_counter() - started
+    assert set(pools) == {"a", "b"}
+    assert elapsed < delay * 1.7  # wall clock ~max(delay), not the sequential sum

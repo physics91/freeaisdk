@@ -227,6 +227,12 @@ class Provider:
         """Force rediscovery on the next ``list_models`` call."""
         self._catalog_at = -math.inf
 
+    def catalog_may_fetch(self) -> bool:
+        """True when the next :meth:`models_snapshot` may perform network I/O."""
+        if self._static is not None:
+            return False
+        return self._catalog_stale(time.monotonic(), refresh=False)
+
     def _catalog_stale(self, now: float, refresh: bool) -> bool:
         return refresh or self._catalog is None or now - self._catalog_at > self.catalog_ttl
 
