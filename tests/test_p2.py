@@ -1,6 +1,7 @@
 """P2 surfaces: aliases, the OpenAI-shaped facade, the local proxy (real socket), CLI, OTel mapping."""
 
 import json
+import socket
 import threading
 
 import httpx
@@ -11,7 +12,7 @@ from freeai import server as server_module
 from freeai.__main__ import main
 from freeai.compat import OpenAI, parse_model
 from freeai.otel import attempt_attributes
-from freeai.server import ProxyServer
+from freeai.server import MAX_BODY_BYTES, ProxyServer
 from freeai.types import Attempt
 
 from .conftest import FakeServer, delta, error, sse
@@ -152,6 +153,32 @@ def test_proxy_rejected_token_does_not_poison_the_connection(proxy):
         assert wrong.status_code == 401
         right = http.get("/models", headers={"Authorization": "Bearer s3cret"})
         assert right.status_code == 200
+
+
+def test_proxy_announces_every_connection_it_closes(proxy):
+    # Without "Connection: close" a keep-alive client may reuse the socket the server is closing
+    # and get "Server disconnected without sending a response" (seen on CI, timing dependent).
+    url = proxy(token="s3cret").url
+    auth = {"Authorization": "Bearer s3cret"}
+    message = {"messages": [{"role": "user", "content": "hi"}]}
+    with httpx.Client(base_url=url, timeout=5) as http:
+        kept = http.get("/models", headers=auth)
+        unauthorized = http.post("/chat/completions", json=message)
+        no_route = http.post("/nowhere", json=message, headers=auth)
+        no_length = http.post("/chat/completions", content=iter([b"{}"]), headers=auth)  # chunked
+    assert kept.status_code == 200 and kept.headers.get("connection") != "close"
+    for reply, status in ((unauthorized, 401), (no_route, 404), (no_length, 411)):
+        assert reply.status_code == status
+        assert reply.headers.get("connection") == "close", status
+    # A declared body over the limit is refused before it is sent (httpx will not send a short one).
+    host, port = httpx.URL(url).host, httpx.URL(url).port
+    with socket.create_connection((host, port), timeout=5) as raw:
+        raw.sendall(
+            b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer s3cret\r\n"
+            b"Content-Length: %d\r\n\r\n" % (MAX_BODY_BYTES + 1)
+        )
+        head = raw.recv(65536).split(b"\r\n\r\n", 1)[0].decode().lower()
+    assert head.startswith("http/1.1 413") and "\r\nconnection: close" in head
 
 
 def test_proxy_token_and_bind_policy(proxy, make_ai):

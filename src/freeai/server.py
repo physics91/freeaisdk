@@ -169,8 +169,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(411, "Content-Length required", "invalid_request_error", "length_required")
             return None
         if int(length) > MAX_BODY_BYTES:
-            self._error(413, "request body too large", "invalid_request_error", "body_too_large")
             self.close_connection = True
+            self._error(413, "request body too large", "invalid_request_error", "body_too_large")
             return None
         try:
             body = json.loads(self.rfile.read(int(length)) or b"{}")
@@ -222,6 +222,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         for name, value in headers.items():
             self.send_header(name, value)
+        if self.close_connection and "Connection" not in headers:
+            # Say so, or a keep-alive client sends its next request into the closing socket.
+            self.send_header("Connection", "close")
         self.end_headers()
         self._started = True
 
