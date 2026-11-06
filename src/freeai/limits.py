@@ -119,10 +119,15 @@ def cooldown_clear(tx: State, key: str) -> None:
 
 
 def cooldown_snapshot(tx: State, prefix: str, now: float) -> dict[str, float]:
+    keys_with_prefix = getattr(tx, "keys_with_prefix", None)
+    if callable(keys_with_prefix):
+        keys = keys_with_prefix(prefix)
+    else:
+        keys = (key for key in list(tx) if key.startswith(prefix))
     return {
         key[len(prefix) :]: float(tx[key]["until"]) - now
-        for key in list(tx)
-        if key.startswith(prefix) and float(tx[key]["until"]) > now
+        for key in keys
+        if float(tx[key]["until"]) > now
     }
 
 

@@ -149,12 +149,33 @@ class _SQLiteView(MutableMapping[str, Any]):
     def __len__(self) -> int:
         return sum(1 for _ in self)
 
+    def keys_with_prefix(self, prefix: str) -> Iterator[str]:
+        """Keys that start with ``prefix``, including unflushed cache overlays.
+
+        Uses a SQL ``LIKE`` scan so callers need not load the whole table, then re-checks
+        ``str.startswith`` because SQLite's default ``LIKE`` is ASCII case-insensitive.
+        """
+        pattern = _like_prefix(prefix)
+        stored = {
+            row[0]
+            for row in self._conn.execute("SELECT key FROM freeai_state WHERE key LIKE ? ESCAPE '\\'", (pattern,))
+            if row[0].startswith(prefix)
+        }
+        cached = {key for key in self._cache if key.startswith(prefix)}
+        return iter(sorted((stored | cached) - self._deleted))
+
     def flush(self) -> None:
-        for key in self._deleted:
-            self._conn.execute("DELETE FROM freeai_state WHERE key = ?", (key,))
-        for key in self._dirty:
-            self._conn.execute(
+        if self._deleted:
+            self._conn.executemany("DELETE FROM freeai_state WHERE key = ?", [(key,) for key in self._deleted])
+        if self._dirty:
+            self._conn.executemany(
                 "INSERT INTO freeai_state (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (key, json.dumps(self._cache[key])),
+                [(key, json.dumps(self._cache[key])) for key in self._dirty],
             )
+
+
+def _like_prefix(prefix: str) -> str:
+    """Turn a literal key prefix into a ``LIKE`` pattern with ``ESCAPE '\\'``."""
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "%"

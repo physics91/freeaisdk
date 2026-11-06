@@ -24,7 +24,17 @@ from freeai import (
     tpm,
 )
 from freeai._core import Wait
-from freeai.limits import EDGE_MARGIN, Cost, pending_add, quota_charge, quota_observe, quota_ready_at, seconds_until
+from freeai.limits import (
+    EDGE_MARGIN,
+    Cost,
+    cooldown_snapshot,
+    pending_add,
+    quota_charge,
+    quota_observe,
+    quota_ready_at,
+    seconds_until,
+)
+from freeai.state import _like_prefix
 
 from .conftest import FakeClock, FakeServer, delta, error, ok, sse
 
@@ -404,6 +414,37 @@ def test_failure_kind_rejected_has_no_cooldown():
     from freeai import CooldownPolicy
 
     assert CooldownPolicy().duration(FailureKind.REJECTED, 3, None) == 0
+
+
+def test_sqlite_keys_with_prefix_matches_iter_and_escapes_like(tmp_path):
+    store = SQLiteStore(tmp_path / "prefix.db")
+    try:
+        with store.transaction() as tx:
+            tx["cd:m:sid|alpha"] = {"until": 100.0, "failures": 1}
+            tx["cd:m:sid|beta"] = {"until": 100.0, "failures": 1}
+            tx["cd:m:other|gamma"] = {"until": 100.0, "failures": 1}
+            tx["cd:m:sid_x|delta"] = {"until": 100.0, "failures": 1}  # `_` must not be a LIKE wildcard
+            tx["plain%one"] = {"until": 100.0, "failures": 1}
+            tx["plainXone"] = {"until": 100.0, "failures": 1}
+            tx["CaseKey"] = {"until": 100.0, "failures": 1}
+
+        with store.transaction() as tx:
+            prefix = "cd:m:sid|"
+            assert list(tx.keys_with_prefix(prefix)) == ["cd:m:sid|alpha", "cd:m:sid|beta"]
+            assert sorted(k for k in tx if k.startswith(prefix)) == list(tx.keys_with_prefix(prefix))
+            assert cooldown_snapshot(tx, prefix, now=50.0) == {"alpha": 50.0, "beta": 50.0}
+
+            assert list(tx.keys_with_prefix("plain%")) == ["plain%one"]
+            assert "plainXone" not in tx.keys_with_prefix("plain%")
+            assert list(tx.keys_with_prefix("case")) == []  # LIKE must not beat startswith on ASCII case
+            assert _like_prefix("a_b%") == r"a\_b\%%"
+
+            tx["cd:m:sid|dirty"] = {"until": 100.0, "failures": 1}
+            del tx["cd:m:sid|alpha"]
+            assert list(tx.keys_with_prefix(prefix)) == ["cd:m:sid|beta", "cd:m:sid|dirty"]
+            assert sorted(k for k in tx if k.startswith(prefix)) == list(tx.keys_with_prefix(prefix))
+    finally:
+        store.close()
 
 
 # -- header snapshots and requests the platform has not counted yet -----------------------------
