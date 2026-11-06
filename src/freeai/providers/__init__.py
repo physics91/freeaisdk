@@ -11,7 +11,6 @@ from ._impl import (
     NVIDIA_FREE_MODELS,
     OVH,
     OVH_ANONYMOUS_MODELS,
-    PRESETS,
     SAMBANOVA_FREE_MODELS,
     ZAI,
     ZAI_FREE_MODELS,
@@ -24,18 +23,14 @@ from ._impl import (
     Kilo,
     Mistral,
     OpenRouter,
-    Preset,
     Provider,
     Requesty,
     SambaNova,
     SnapshotSink,
     Tier,
     Verdict,
-    cerebras,
-    gemini,
-    groq,
-    mistral,
 )
+from .presets import PRESETS, Preset, cerebras, gemini, groq, mistral
 
 __all__ = [
     "CEREBRAS_TRIAL_MODELS",
