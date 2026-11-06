@@ -12,7 +12,6 @@ import dataclasses
 import hashlib
 import math
 import os
-import re
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Mapping
@@ -33,7 +32,6 @@ from .._http import (
     error_text,
     is_event_stream,
     logger,
-    parse_reset,
     retry_hint,
     seconds_until_midnight,
 )
@@ -42,7 +40,6 @@ from ..limits import (
     Limit,
     LimitScope,
     RateSnapshot,
-    Unit,
     Window,
     seconds_until,
 )
@@ -59,12 +56,12 @@ from ._classify import (
     _effective_status,
     _message,
 )
+from ._ratelimit import rate_snapshots_from_headers
 
 Tier = Literal["free", "trial", "paid", "unknown"]
 Verdict = tuple[FailureKind, Scope | None]
 SnapshotSink = Callable[[list[RateSnapshot]], None]
 
-_LIMIT_HEADER_RE = re.compile(r"^x-ratelimit-(limit|remaining|reset)-(requests|tokens)(?:-(minute|hour|day|month))?$")
 _STALE_CATALOG_RETRY = 60.0
 _CONNECT_TIMEOUT = 5.0
 # httpx defaults (100 connections, 20 kept alive) queue a busy provider's requests behind the pool and
@@ -509,27 +506,7 @@ class Provider:
 
     def rate_snapshots(self, headers: Mapping[str, str]) -> list[RateSnapshot]:
         """Limit state from ``x-ratelimit-{limit,remaining,reset}-{requests,tokens}[-window]`` headers."""
-        found: dict[tuple[Unit, Window], dict[str, float]] = {}
-        wall = time.time()
-        for name, value in Headers(headers).items():
-            match = _LIMIT_HEADER_RE.match(name.lower())
-            if not match:
-                continue
-            kind, unit_name, window_name = match.groups()
-            unit: Unit = "requests" if unit_name == "requests" else "tokens"
-            window = _as_window(window_name) or self.header_windows.get(unit)
-            if window is None:
-                continue
-            number = parse_reset(value.strip(), wall) if kind == "reset" else _number(value)
-            if number is not None:
-                found.setdefault((unit, window), {})[kind] = number
-        return [
-            RateSnapshot(
-                window, unit, values["limit"], max(0.0, values["remaining"]), self.header_scope, values.get("reset")
-            )
-            for (unit, window), values in found.items()
-            if values.get("limit", 0) > 0 and "remaining" in values
-        ]
+        return rate_snapshots_from_headers(headers, self.header_windows, self.header_scope)
 
     # -- lifecycle -------------------------------------------------------------------------
 
@@ -630,20 +607,6 @@ class Provider:
 _VERIFIED = "2026-11-06"
 
 # -- helpers -----------------------------------------------------------------------------------
-
-
-_WINDOWS: dict[str, Window] = {"minute": "minute", "hour": "hour", "day": "day", "month": "month"}
-
-
-def _as_window(name: str | None) -> Window | None:
-    return _WINDOWS.get(name) if name else None
-
-
-def _number(value: str) -> float | None:
-    try:
-        return float(value)
-    except ValueError:
-        return None
 
 
 def _without(message: Any, key: str) -> Any:
