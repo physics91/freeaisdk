@@ -24,19 +24,13 @@ from ._messages import (
     to_chunk,
     to_response,
 )
+from ._observe import Observe
 from ._order import OrderPolicy
 from ._order import _rank as _rank  # re-export for ``from freeai._core import _rank``
 from ._plan import Plan
-from ._routing_types import (
-    _NO_RESERVATION,
-    Request,
-    Reservation,
-    Wait,
-    _learned_identity,
-    _learned_key,
-    _provider_key,
-)
-from .cooldown import CooldownPolicy, cooldown_ready_at
+from ._routing_types import _NO_RESERVATION, Request, Reservation, Wait
+from ._routing_types import _learned_key as _learned_key  # tests import from _core
+from .cooldown import CooldownPolicy
 from .errors import (
     BillingWarning,
     ExhaustedError,
@@ -44,13 +38,7 @@ from .errors import (
     ProviderFailure,
 )
 from .health import HealthStats
-from .limits import (
-    Cost,
-    Limit,
-    RateSnapshot,
-    State,
-    quota_observe,
-)
+from .limits import Cost, Limit, RateSnapshot, State
 from .providers import Provider
 from .retry import RetryBudget
 from .state import MemoryStore, StateStore
@@ -218,6 +206,13 @@ class Router:
             clock=self.clock,
             cost=self.cost,
         )
+        self._observe = Observe(
+            lock=self._lock,
+            store=self.store,
+            by_name=self._by_name,
+            providers=self.providers,
+            clock=self.clock,
+        )
         for provider in self.providers:
             if provider.tier in ("trial", "paid"):
                 warnings.warn(
@@ -298,75 +293,21 @@ class Router:
 
     def observe(self, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]) -> None:
         """Update local quota counters with limit state the platform reported."""
-        self.observe_many(((provider_name, model_id, snapshots),))
+        self._observe.observe(provider_name, model_id, snapshots)
 
     def observe_many(self, items: Iterable[tuple[str, str, Iterable[RateSnapshot]]]) -> None:
         """Apply several snapshot batches in one store transaction (empty batches are skipped)."""
-        batches: list[tuple[str, str, list[RateSnapshot]]] = []
-        for provider_name, model_id, snapshots in items:
-            snaps = list(snapshots)
-            if snaps:
-                batches.append((provider_name, model_id, snaps))
-        if not batches:
-            return
-        with self._lock, self.store.transaction() as tx:
-            for provider_name, model_id, snaps in batches:
-                self._observe_tx(tx, provider_name, model_id, snaps)
+        self._observe.observe_many(items)
 
     def _observe_tx(
         self, tx: State, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]
     ) -> None:
         """Apply ``snapshots`` into an open transaction. Caller must hold ``_lock``; no nested lock."""
-        snapshots = list(snapshots)
-        if not snapshots:
-            return
-        provider = self._by_name[provider_name]
-        sid = provider.state_id
-        now = self.clock()
-        by_id = {_learned_identity(entry): dict(entry) for entry in tx.get(_learned_key(sid), [])}
-        for snapshot in snapshots:
-            quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz)
-            entry = {
-                "per": snapshot.per,
-                "unit": snapshot.unit,
-                "scope": snapshot.scope,
-                "model": model_id if snapshot.scope == "model" else None,
-                "amount": snapshot.limit,
-            }
-            by_id[_learned_identity(entry)] = entry
-        # Sorted only for stable store bytes; consumers treat the registry as a bag.
-        tx[_learned_key(sid)] = [
-            by_id[identity] for identity in sorted(by_id, key=lambda item: (*item[:3], item[3] or ""))
-        ]
+        self._observe.apply_tx(tx, provider_name, model_id, snapshots)
 
     def status(self) -> dict[str, dict[str, float]]:
         """Remaining cooldown seconds per model key and per provider."""
-        models: dict[str, float] = {}
-        providers: dict[str, float] = {}
-        with self.store.transaction() as tx:
-            now = self.clock()
-            by_sid = {provider.state_id: provider.name for provider in self.providers}
-            for sid, name in by_sid.items():
-                remaining = cooldown_ready_at(tx, _provider_key(sid)) - now
-                if remaining > 0:
-                    providers[name] = remaining
-            # One ``cd:m:`` scan for every provider instead of N prefix snapshots.
-            items_with_prefix = getattr(tx, "items_with_prefix", None)
-            if callable(items_with_prefix):
-                model_entries = items_with_prefix("cd:m:")
-            else:
-                model_entries = ((key, tx[key]) for key in list(tx) if key.startswith("cd:m:"))
-            for key, entry in model_entries:
-                left = float(entry["until"]) - now
-                if left <= 0:
-                    continue
-                sid, sep, model_id = key.removeprefix("cd:m:").partition("|")
-                if not sep:
-                    continue
-                name = by_sid.get(sid)
-                if name is not None:
-                    models[f"{name}:{model_id}"] = left
-        return {"models": models, "providers": providers}
+        return self._observe.status()
 
     def health_snapshot(self) -> dict[str, dict[str, float]]:
         with self._lock:
