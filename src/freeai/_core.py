@@ -449,18 +449,35 @@ class Router:
             now = self.clock()
             earliest = math.inf
             learned_by_sid: dict[str, list[Any]] = {}
+            cooldown_by_sid: dict[str, tuple[Any, dict[str, Any], bool]] = {}
             for model in candidates:
                 provider = self._by_name[model.provider]
                 sid = provider.state_id
                 model_key, provider_key = _model_key(sid, model.id), _provider_key(sid)
-                ready = max(cooldown_ready_at(tx, model_key), cooldown_ready_at(tx, provider_key))
+                if sid not in cooldown_by_sid:
+                    cooldown_by_sid[sid] = _cooldown_bundle(tx, sid)
+                provider_entry, model_entries, authoritative = cooldown_by_sid[sid]
+                if authoritative:
+                    model_entry = model_entries.get(model.id)
+                    model_ready = float(model_entry["until"]) if model_entry else 0.0
+                    model_failures = int(model_entry["failures"]) if model_entry else 0
+                else:
+                    model_ready = cooldown_ready_at(tx, model_key)
+                    model_failures = cooldown_failures(tx, model_key)
+                provider_ready = float(provider_entry["until"]) if provider_entry else 0.0
+                provider_failures = int(provider_entry["failures"]) if provider_entry else 0
+                ready = max(model_ready, provider_ready)
                 if sid not in learned_by_sid:
                     learned_by_sid[sid] = list(tx.get(_learned_key(sid), []))
                 limits = self._limits(tx, provider, model.id, learned=learned_by_sid[sid])
                 cost = self.cost(provider, request)
                 if ready <= now:
                     ready = quota_ready_at(tx, limits, sid, model.id, cost, now, provider.reset_tz)
-                probes = [k for k in (model_key, provider_key) if cooldown_failures(tx, k) > 0]
+                probes = [
+                    key
+                    for key, fails in ((model_key, model_failures), (provider_key, provider_failures))
+                    if fails > 0
+                ]
                 if ready <= now and (self._slots_full(provider) or self._probing.intersection(probes)):
                     ready = now + _SLOT_POLL
                 if ready <= now:
@@ -796,6 +813,21 @@ class Plan:
 
 
 # -- helpers -----------------------------------------------------------------------------------
+
+
+def _cooldown_bundle(tx: State, sid: str) -> tuple[Any, dict[str, Any], bool]:
+    """Provider cooldown entry plus optional authoritative model-id map for one ``state_id``.
+
+    When ``tx`` supports ``items_with_prefix``, the model map is complete for this transaction
+    (missing id means ready). Otherwise the map is empty and callers must use point lookups.
+    """
+    provider_entry = tx.get(_provider_key(sid))
+    items_with_prefix = getattr(tx, "items_with_prefix", None)
+    if not callable(items_with_prefix):
+        return provider_entry, {}, False
+    prefix = f"cd:m:{sid}|"
+    models = {key.removeprefix(prefix): entry for key, entry in items_with_prefix(prefix)}
+    return provider_entry, models, True
 
 
 def _model_key(sid: str, model_id: str) -> str:
