@@ -8,7 +8,7 @@ import pytest
 
 from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, RetryBudget
 from freeai._core import Wait
-from freeai._http import EventReader
+from freeai._sse import EventReader
 
 from .conftest import FakeClock, FakeServer, error, ok, sse
 

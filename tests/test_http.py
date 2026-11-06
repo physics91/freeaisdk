@@ -2,7 +2,8 @@ import httpx
 import pytest
 
 from freeai import CooldownPolicy, FailureKind, Gemini, Groq, OpenRouter, Provider, Scope
-from freeai._http import error_object, iter_sse, retry_hint, seconds_until_midnight
+from freeai._http import error_object, retry_hint, seconds_until_midnight
+from freeai._sse import iter_sse
 
 NOW = 1_700_000_000.0
 

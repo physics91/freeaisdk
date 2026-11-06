@@ -10,14 +10,8 @@ from collections.abc import AsyncGenerator, Callable, Generator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .._http import (
-    EventReader,
-    Headers,
-    TransportError,
-    decode,
-    error_object,
-    is_event_stream,
-)
+from .._http import Headers, TransportError, decode, error_object
+from .._sse import EventReader, is_event_stream
 from ..errors import FailureKind, ProviderFailure
 from ..limits import RateSnapshot
 
