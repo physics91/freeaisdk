@@ -170,7 +170,10 @@ class Provider:
         self._ahttp = async_http_client
         self._owns_http = http_client is None
         self._owns_ahttp = async_http_client is None
+        # Discovery I/O uses the flight locks; ``_catalog_lock`` only covers cache read/write.
+        # Order when both are needed: flight lock, then ``_catalog_lock`` (never reverse).
         self._catalog_lock = threading.Lock()
+        self._sync_catalog_lock = threading.Lock()
         self._acatalog_lock: asyncio.Lock | None = None
         self._acatalog_loop: asyncio.AbstractEventLoop | None = None
         self._client_lock = threading.Lock()
@@ -202,17 +205,27 @@ class Provider:
         return list(await self.amodels_snapshot(refresh=refresh))
 
     def models_snapshot(self, *, refresh: bool = False) -> tuple[ModelInfo, ...]:
-        """Cached catalog for routing. Treat as immutable; use :meth:`list_models` to copy."""
+        """Cached catalog for routing. Treat as immutable; use :meth:`list_models` to copy.
+
+        Concurrent cold calls share one discovery (single-flight) without holding
+        ``_catalog_lock`` across network I/O.
+        """
         if self._static is not None:
             return self._static
-        with self._catalog_lock:
+        with self._sync_catalog_lock:
             now = time.monotonic()
             if self._catalog_stale(now, refresh):
                 try:
-                    self._set_catalog(self._discover(), now)
+                    catalog = self._discover()
                 except (HTTPError, ValueError, KeyError, TypeError) as exc:
-                    self._catalog_failed(exc, now)
-            return self._catalog or ()
+                    with self._catalog_lock:
+                        self._catalog_failed(exc, time.monotonic())
+                        return self._catalog or ()
+                with self._catalog_lock:
+                    self._set_catalog(catalog, time.monotonic())
+                    return self._catalog or ()
+            with self._catalog_lock:
+                return self._catalog or ()
 
     async def amodels_snapshot(self, *, refresh: bool = False) -> tuple[ModelInfo, ...]:
         """Async variant of :meth:`models_snapshot`.

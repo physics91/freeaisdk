@@ -1,4 +1,6 @@
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from freeai import FreeAI, OpenRouter, Provider
 from freeai.types import ModelInfo
@@ -56,6 +58,38 @@ def test_list_models_copy_isolates_cache_and_snapshot_is_shared(server: FakeServ
     assert provider.list_models()  # public copy mutation must not empty the cache
     assert provider.models_snapshot() is snapshot  # routing reuses the immutable snapshot
     assert tuple(provider.list_models()) == snapshot
+
+
+def test_sync_catalog_single_flight_and_lock_not_held_during_discover():
+    fetches = {"n": 0}
+    started = threading.Event()
+    release = threading.Event()
+
+    class Slow(Provider):
+        def __init__(self) -> None:
+            super().__init__("p", "https://example.test", api_key="k", keyless=False)
+
+        def _discover(self) -> list[ModelInfo]:
+            fetches["n"] += 1
+            started.set()
+            assert release.wait(1.0)
+            return [ModelInfo(self.name, "m")]
+
+    provider = Slow()
+
+    def snapshot() -> tuple[ModelInfo, ...]:
+        return provider.models_snapshot()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(snapshot) for _ in range(4)]
+        assert started.wait(1.0)
+        acquired = provider._catalog_lock.acquire(timeout=0.05)
+        assert acquired  # discover must not hold _catalog_lock across I/O
+        provider._catalog_lock.release()
+        release.set()
+        results = [future.result() for future in futures]
+    assert fetches["n"] == 1
+    assert all(result == (ModelInfo("p", "m"),) for result in results)
 
 
 def test_sync_pools_fetches_cold_catalogs_in_parallel():
