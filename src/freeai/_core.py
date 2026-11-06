@@ -1,12 +1,12 @@
-"""Routing core without I/O: candidate order, reservations, failure bookkeeping, response parsing.
+"""Routing core without I/O: candidate order, reservations, and failure bookkeeping.
 
-The sync :class:`~freeai.FreeAI` and async :class:`~freeai.AsyncFreeAI` clients are thin shells
-that perform the network calls this module asks for.
+Message/response parsing lives in :mod:`freeai._messages`. The sync
+:class:`~freeai.FreeAI` and async :class:`~freeai.AsyncFreeAI` clients are thin shells that
+perform the network calls this module asks for.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import random
@@ -19,6 +19,15 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple, TypedDict
 
 from ._http import logger
+from ._messages import (
+    Messages,
+    _estimate_tokens,
+    _input_modalities,
+    _normalize_messages,
+    empty_stream,
+    to_chunk,
+    to_response,
+)
 from .errors import (
     SKIP_FOR_REQUEST,
     BillingWarning,
@@ -49,10 +58,25 @@ from .limits import (
 )
 from .providers import PRESETS, OpenRouter, Provider, Tier
 from .state import MemoryStore, StateStore
-from .types import Attempt, ChatResponse, Message, ModelInfo, Requirements, StreamChunk
+from .types import Attempt, ChatResponse, ModelInfo, Requirements
 
 Strategy = Literal["priority", "round_robin", "random", "health"]
-Messages = str | Sequence[Message]
+
+# Re-export for existing ``from freeai._core import …`` call sites.
+__all__ = [
+    "DEFAULT_EXCLUDE",
+    "Messages",
+    "Plan",
+    "Request",
+    "Reservation",
+    "Router",
+    "RouterOptions",
+    "Wait",
+    "build_from_env",
+    "empty_stream",
+    "to_chunk",
+    "to_response",
+]
 
 
 class Reservation(NamedTuple):
@@ -93,14 +117,10 @@ ALIASES: dict[str, tuple[str, ...]] = {
 
 # Request parameters that only some models support; their presence narrows the candidates.
 _CAPABILITY_PARAMS = ("tools", "tool_choice", "response_format", "reasoning")
-_PART_MODALITY = {"image_url": "image", "input_audio": "audio", "file": "file", "video_url": "video"}
 _RESERVED_PARAMS = {"messages", "stream", "models"}
 # Only choices[0] is read, so extra choices would just burn quota (and Groq/Cerebras reject n != 1).
 _STRIPPED_PARAMS = {"n"}
 _MAX_BAD_REQUESTS_PER_PROVIDER = 2  # the same rejection twice means this provider dislikes the request
-_CHARS_PER_TOKEN = 4  # rough size estimate, refined by ``usage`` after each response
-_TOKENS_PER_ATTACHMENT = 1000  # images/audio/files count as a flat amount instead of their base64 size
-_DEFAULT_OUTPUT_TOKENS = 512  # output reserve when the caller sets no max_tokens
 _SLOT_POLL = 0.25  # re-check interval while a provider's concurrency slots or a probe are busy
 
 
@@ -733,67 +753,6 @@ def build_from_env(tiers: Iterable[Tier], include_keyless: bool) -> list[Provide
     return providers
 
 
-# -- response parsing --------------------------------------------------------------------------
-
-
-def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool) -> ChatResponse:
-    choice = data["choices"][0]
-    if not isinstance(choice, dict) or choice.get("finish_reason") == "error":
-        raise ProviderFailure(FailureKind.UNAVAILABLE, f"{model.provider}: {model.id} returned an error choice")
-    message = choice.get("message") or {}
-    text = content_text(message.get("content"))
-    if not text.strip() and not message.get("tool_calls"):
-        if choice.get("finish_reason") == "length":
-            raise ProviderFailure(
-                FailureKind.OUTPUT_LIMIT,
-                f"{model.provider}: {model.id} used the whole max_tokens budget (likely on reasoning) "
-                "before answering; raise max_tokens or lower the reasoning effort",
-            )
-        if retry_on_empty:
-            raise ProviderFailure(FailureKind.EMPTY, f"{model.provider}: {model.id} returned an empty completion")
-    return ChatResponse(
-        text=text,
-        provider=model.provider,
-        model=data.get("model") or model.id,
-        requested_model=model.id,
-        message=message,
-        finish_reason=choice.get("finish_reason"),
-        usage=data.get("usage"),
-        raw=data,
-    )
-
-
-def to_chunk(model: ModelInfo, event: dict[str, Any]) -> StreamChunk:
-    choices = event.get("choices") or []
-    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
-    if choice.get("finish_reason") == "error":
-        raise ProviderFailure(FailureKind.UNAVAILABLE, f"{model.provider}: {model.id} stream ended with an error")
-    delta = choice.get("delta") or {}
-    reasoning = delta.get("reasoning") or delta.get("reasoning_content")
-    return StreamChunk(
-        text=content_text(delta.get("content")),
-        provider=model.provider,
-        model=event.get("model") or model.id,
-        reasoning=reasoning if isinstance(reasoning, str) else "",
-        tool_calls=tuple(delta.get("tool_calls") or ()),
-        finish_reason=choice.get("finish_reason"),
-        usage=event.get("usage"),
-        raw=event,
-    )
-
-
-def content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
-    return ""
-
-
-def empty_stream(model: ModelInfo) -> ProviderFailure:
-    return ProviderFailure(FailureKind.EMPTY, f"{model.provider}: {model.id} streamed no output")
-
-
 # -- helpers -----------------------------------------------------------------------------------
 
 
@@ -834,52 +793,6 @@ def _total_tokens(usage: Mapping[str, Any] | None) -> float | None:
     if all(isinstance(p, (int, float)) and not isinstance(p, bool) for p in parts):
         return float(sum(parts))  # type: ignore[arg-type]
     return None
-
-
-def _estimate_tokens(payload: Mapping[str, Any]) -> float:
-    """Prompt plus output reserve, in tokens; attachments count as a flat amount."""
-    chars = 0
-    attachments = 0
-    for message in payload.get("messages", []):
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, str):
-            chars += len(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    chars += len(str(part.get("text", "")))
-                else:
-                    attachments += 1
-        if isinstance(message, dict) and message.get("tool_calls"):
-            chars += len(json.dumps(message["tool_calls"], default=str))
-    if payload.get("tools"):
-        chars += len(json.dumps(payload["tools"], default=str))
-    output = payload.get("max_completion_tokens") or payload.get("max_tokens") or _DEFAULT_OUTPUT_TOKENS
-    output = output if isinstance(output, (int, float)) and not isinstance(output, bool) else _DEFAULT_OUTPUT_TOKENS
-    return float(chars // _CHARS_PER_TOKEN + attachments * _TOKENS_PER_ATTACHMENT + output)
-
-
-def _normalize_messages(messages: Messages, system: str | None) -> list[Message]:
-    if isinstance(messages, str):
-        result: list[Message] = [{"role": "user", "content": messages}]
-    else:
-        result = [dict(m) for m in messages]
-    if system is not None:
-        result.insert(0, {"role": "system", "content": system})
-    if not result:
-        raise ValueError("messages must not be empty")
-    return result
-
-
-def _input_modalities(messages: list[Message]) -> frozenset[str]:
-    found: set[str] = set()
-    for message in messages:
-        content = message.get("content")
-        if isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") in _PART_MODALITY:
-                    found.add(_PART_MODALITY[part["type"]])
-    return frozenset(found)
 
 
 def _rank(model: ModelInfo, patterns: Sequence[str]) -> int:
