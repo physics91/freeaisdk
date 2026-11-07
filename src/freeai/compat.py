@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import aclosing, closing
 from typing import Any, Literal, overload
 
 from .aio import AsyncFreeAI
@@ -85,7 +86,12 @@ class _Completions:
         self, *, messages: Sequence[Message], model: str | None = None, stream: bool = False, **params: Any
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         if stream:
-            return (chunk_dict(c) for c in self._ai.stream(messages, model=parse_model(model), **params))
+            def generate() -> Iterator[dict[str, Any]]:
+                with closing(self._ai.stream(messages, model=parse_model(model), **params)) as chunks:
+                    for chunk in chunks:
+                        yield chunk_dict(chunk)
+
+            return generate()
         return completion_dict(self._ai.chat(messages, model=parse_model(model), **params))
 
 
@@ -97,8 +103,13 @@ class _AsyncCompletions:
         self, *, messages: Sequence[Message], model: str | None = None, stream: bool = False, **params: Any
     ) -> dict[str, Any] | AsyncIterator[dict[str, Any]]:
         if stream:
-            chunks = self._ai.stream(messages, model=parse_model(model), **params)
-            return (chunk_dict(c) async for c in chunks)
+
+            async def generate() -> AsyncIterator[dict[str, Any]]:
+                async with aclosing(self._ai.stream(messages, model=parse_model(model), **params)) as chunks:
+                    async for chunk in chunks:
+                        yield chunk_dict(chunk)
+
+            return generate()
         return completion_dict(await self._ai.chat(messages, model=parse_model(model), **params))
 
 

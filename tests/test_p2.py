@@ -17,7 +17,7 @@ from freeai.otel import attempt_attributes
 from freeai.server import MAX_BODY_BYTES, ProxyServer
 from freeai.types import Attempt, ChatResponse
 
-from .conftest import FakeServer, delta, error, sse
+from .conftest import FakeServer, delta, error, ok, sse
 
 ALPHA, BETA = "alpha/one:free", "beta/two:free"
 
@@ -60,6 +60,53 @@ def test_openai_facade(make_ai, server):
     assert "".join(c["choices"][0]["delta"]["content"] for c in chunks) == "ok"
     assert {c["object"] for c in chunks} == {"chat.completion.chunk"}
     assert client.models.list()["data"][0]["id"] == f"openrouter:{ALPHA}"
+
+
+def test_openai_facade_stream_close_releases_slot(clock, server):
+    server.on("m1", sse(delta("x"), delta("y"), delta(finish="stop")), ok(text="second"))
+    provider = Provider(
+        "p",
+        "https://p.example/v1",
+        api_key="k",
+        models=["m1"],
+        max_concurrency=1,
+        http_client=server.client(),
+    )
+    ai = FreeAI([provider], clock=clock, sleep=clock.sleep, max_wait=0)
+    stream = OpenAI(ai).chat.completions.create(messages=[{"role": "user", "content": "hi"}], stream=True)
+    assert next(stream)["choices"][0]["delta"]["content"] == "x"
+    stream.close()
+    assert ai.chat("hi").text == "second"
+
+
+def test_async_openai_facade_stream_aclose_releases_slot(clock, server):
+    server.on("m1", sse(delta("x"), delta("y"), delta(finish="stop")), ok(text="second"))
+    provider = Provider(
+        "p",
+        "https://p.example/v1",
+        api_key="k",
+        models=["m1"],
+        max_concurrency=1,
+        http_client=server.client(),
+        async_http_client=server.aclient(),
+    )
+
+    async def asleep(seconds: float) -> None:
+        clock.sleep(seconds)
+
+    async def main() -> str:
+        ai = AsyncFreeAI([provider], clock=clock, sleep=asleep, max_wait=0)
+        stream = await AsyncOpenAI(ai).chat.completions.create(
+            messages=[{"role": "user", "content": "hi"}], stream=True
+        )
+        assert (await stream.__anext__())["choices"][0]["delta"]["content"] == "x"
+        await stream.aclose()
+        try:
+            return (await ai.chat("hi")).text
+        finally:
+            await ai.aclose()
+
+    assert asyncio.run(main()) == "second"
 
 
 def test_async_openai_models_list(server, clock):
