@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from freeai import CooldownPolicy, FailureKind, Gemini, Groq, OpenRouter, Provider, Scope
-from freeai._http import error_object, retry_hint, seconds_until_midnight
+from freeai._http import _zone, error_object, retry_hint, seconds_until_midnight
 from freeai._sse import iter_sse
 
 NOW = 1_700_000_000.0
@@ -241,3 +241,8 @@ def test_cooldown_policy():
     assert policy.duration(FailureKind.CONTEXT_EXCEEDED, 1, None) == 0
     assert policy.duration(FailureKind.OUTPUT_LIMIT, 1, None) == 0
     assert policy.duration(FailureKind.NOT_ENTITLED, 1, None) == 86400
+
+
+def test_zone_is_cached():
+    assert _zone("America/Los_Angeles") is _zone("America/Los_Angeles")
+    assert _zone("UTC") is _zone("UTC")

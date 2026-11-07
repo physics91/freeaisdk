@@ -13,6 +13,7 @@ import re
 import time
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -207,7 +208,9 @@ def seconds_until_midnight(zone: str, *, now: datetime | None = None) -> float:
     return (midnight - current).total_seconds()
 
 
+@lru_cache(maxsize=32)
 def _zone(zone: str) -> tzinfo:
+    """Resolve ``zone`` once; quota/period checks hit this on every reserve/observe."""
     if zone.upper() == "UTC":
         return UTC
     try:
