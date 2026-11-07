@@ -20,6 +20,11 @@ _PLATFORM_LIMIT_HEADERS = frozenset({"x-ratelimit-limit", "x-ratelimit-remaining
 _STRICT_PARAMS = ("tools", "tool_choice", "response_format")
 
 
+def _provider_object(value: Any) -> dict[str, Any]:
+    """OpenRouter ``provider`` must be an object; ignore a non-dict caller value."""
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
 class OpenRouter(Provider):
     """OpenRouter with automatic discovery of free models.
 
@@ -91,12 +96,12 @@ class OpenRouter(Provider):
         body = super().prepare_payload(model_id, payload)
         if any(_param_active(body.get(name)) for name in _STRICT_PARAMS):
             # Without this OpenRouter may route to an endpoint that silently ignores tools/JSON mode.
-            body["provider"] = {**(body.get("provider") or {}), "require_parameters": True}
+            body["provider"] = {**_provider_object(body.get("provider")), "require_parameters": True}
         return body
 
     def deny_training(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         body = dict(payload)
-        body["provider"] = {**(body.get("provider") or {}), "data_collection": "deny"}
+        body["provider"] = {**_provider_object(body.get("provider")), "data_collection": "deny"}
         return body
 
     def _verdict(self, code: int, headers: Headers, error: dict[str, Any], text: str) -> Verdict:

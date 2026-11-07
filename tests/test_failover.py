@@ -334,6 +334,21 @@ def test_empty_capability_params_do_not_narrow():
     assert "tools" in request.requirements.parameters
 
 
+def test_openrouter_provider_field_ignores_non_dict():
+    from freeai.providers.openrouter import OpenRouter
+
+    router = OpenRouter(api_key="k")
+    body = router.prepare_payload(
+        "m",
+        {"messages": [], "tools": [{"type": "function", "function": {"name": "w", "parameters": {}}}], "provider": "x"},
+    )
+    assert body["provider"] == {"require_parameters": True}
+    denied = router.deny_training({"messages": [], "provider": "x"})
+    assert denied["provider"] == {"data_collection": "deny"}
+    merged = router.deny_training({"messages": [], "provider": {"order": ["a"]}})
+    assert merged["provider"] == {"order": ["a"], "data_collection": "deny"}
+
+
 def test_from_env_enables_only_free_tiers(monkeypatch):
     for preset in PRESETS.values():
         for name in preset.env:
