@@ -148,16 +148,11 @@ class _Handler(BaseHTTPRequestHandler):
         return self.path.split("?", 1)[0].rstrip("/") or "/"
 
     def _authorized(self) -> bool:
-        token = self.server.token
-        if token is None:
+        expected = self.server._token_bytes
+        if expected is None:
             return True
         scheme, _, given = self.headers.get("Authorization", "").partition(" ")
-        expected = self.server._token_bytes
-        if (
-            scheme.lower() == "bearer"
-            and expected is not None
-            and hmac.compare_digest(given.strip().encode(), expected)
-        ):
+        if scheme.lower() == "bearer" and hmac.compare_digest(given.strip().encode(), expected):
             return True
         self.close_connection = True  # any request body stays unread
         self._error(
