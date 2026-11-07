@@ -326,6 +326,7 @@ def test_empty_capability_params_do_not_narrow():
     for empty in (
         {"tools": []},
         {"tool_choice": ""},
+        {"tool_choice": "none"},
         {"response_format": {}},
         {"reasoning": False},
         {"response_format": False},

@@ -18,10 +18,12 @@ _PART_MODALITY = {"image_url": "image", "input_audio": "audio", "file": "file", 
 def _param_active(value: Any) -> bool:
     """True when a request param meaningfully asks for a capability.
 
-    Empty ``tools=[]`` / ``tool_choice=""`` / ``response_format={}`` and falsy scalars
-    such as ``reasoning=False`` / ``0`` must not narrow candidates or force OpenRouter
-    ``require_parameters``.
+    Empty ``tools=[]`` / ``tool_choice=""`` / ``response_format={}``, falsy scalars such as
+    ``reasoning=False`` / ``0``, and ``tool_choice="none"`` must not narrow candidates or force
+    OpenRouter ``require_parameters``.
     """
+    if isinstance(value, str) and value.strip().casefold() == "none":
+        return False
     return bool(value)
 
 
