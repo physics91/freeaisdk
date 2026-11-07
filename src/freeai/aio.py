@@ -274,7 +274,7 @@ class AsyncFreeAI(_ClientBase):
                         emitted.append(chunk.text)
                         yield chunk
             except ProviderFailure as failure:
-                if plan.failed(target, failure, started):
+                if plan.failed(target, failure, started, usage=usage):
                     router.observe(provider.name, "*", await provider.arefresh_quota())
                 if delivered:
                     raise StreamInterrupted(failure, "".join(emitted), plan.attempts) from failure

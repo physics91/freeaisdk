@@ -363,9 +363,7 @@ class FreeAI(_ClientBase):
                 pools_future = pool.submit(self._pools)
                 snapshots = list(pool.map(lambda provider: provider.refresh_quota(), early))
                 pools = pools_future.result()
-            router.observe_many(
-                (provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True)
-            )
+            router.observe_many((provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True))
         else:
             pools = self._pools()
         plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline)
@@ -424,7 +422,7 @@ class FreeAI(_ClientBase):
                         emitted.append(chunk.text)
                         yield chunk
             except ProviderFailure as failure:
-                if plan.failed(target, failure, started):
+                if plan.failed(target, failure, started, usage=usage):
                     router.observe(provider.name, "*", provider.refresh_quota())
                 if delivered:
                     raise StreamInterrupted(failure, "".join(emitted), plan.attempts) from failure
