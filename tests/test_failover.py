@@ -323,7 +323,14 @@ def test_empty_capability_params_do_not_narrow():
     from freeai.providers.openrouter import OpenRouter
 
     prepare = PreparePolicy(aliases=ALIASES, allow_training=True, by_name={})
-    for empty in ({"tools": []}, {"tool_choice": ""}, {"response_format": {}}):
+    for empty in (
+        {"tools": []},
+        {"tool_choice": ""},
+        {"response_format": {}},
+        {"reasoning": False},
+        {"response_format": False},
+        {"reasoning": 0},
+    ):
         request = prepare.prepare("hi", None, None, (), None, dict(empty))
         assert request.requirements.parameters == frozenset()
         body = OpenRouter(api_key="k").prepare_payload("m", {"messages": [], **empty})
@@ -332,6 +339,10 @@ def test_empty_capability_params_do_not_narrow():
         "hi", None, None, (), None, {"tools": [{"type": "function", "function": {"name": "w", "parameters": {}}}]}
     )
     assert "tools" in request.requirements.parameters
+    assert "reasoning" in prepare.prepare("hi", None, None, (), None, {"reasoning": True}).requirements.parameters
+    assert "response_format" in prepare.prepare(
+        "hi", None, None, (), None, {"response_format": {"type": "json_object"}}
+    ).requirements.parameters
 
 
 def test_openrouter_provider_field_ignores_non_dict():
