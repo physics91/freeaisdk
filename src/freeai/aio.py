@@ -8,7 +8,17 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequen
 from contextlib import aclosing
 from typing import Any, Self, Unpack
 
-from ._core import Messages, Plan, Request, RouterOptions, Wait, empty_stream, to_chunk
+from ._core import (
+    Messages,
+    Plan,
+    Request,
+    RouterOptions,
+    Wait,
+    empty_stream,
+    output_limit_failure,
+    stream_chunk_answered,
+    to_chunk,
+)
 from .client import _NO_COST, _POLL_SECONDS, _ClientBase, _read_version
 from .errors import FailureKind, FreeAIError, OutputLimitError, ProviderFailure, StreamInterrupted
 from .providers import Provider
@@ -255,6 +265,8 @@ class AsyncFreeAI(_ClientBase):
             usage: dict[str, Any] | None = None
             served: str | None = None
             delivered = False
+            answered = False
+            finish_reason: str | None = None
             try:
                 events = provider.astream(
                     target.id,
@@ -268,6 +280,10 @@ class AsyncFreeAI(_ClientBase):
                         chunk = to_chunk(target, event)
                         if chunk.usage is not None:
                             usage = chunk.usage
+                        if chunk.finish_reason is not None:
+                            finish_reason = chunk.finish_reason
+                        if stream_chunk_answered(chunk):
+                            answered = True
                         if not delivered and not chunk.has_output:
                             continue
                         delivered = True
@@ -283,6 +299,10 @@ class AsyncFreeAI(_ClientBase):
             except BaseException:
                 plan.release(target)
                 raise
+            if not answered and finish_reason == "length":
+                failure = output_limit_failure(target)
+                plan.failed(target, failure, started, usage=usage)
+                raise OutputLimitError(failure.message, plan.attempts) from None
             if not delivered and router.retry_on_empty:
                 plan.failed(target, empty_stream(target), started, usage=usage)
                 continue

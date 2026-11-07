@@ -21,6 +21,8 @@ from ._core import (
     RouterOptions,
     Wait,
     empty_stream,
+    output_limit_failure,
+    stream_chunk_answered,
     to_chunk,
 )
 from ._http import logger
@@ -403,6 +405,8 @@ class FreeAI(_ClientBase):
             usage: dict[str, Any] | None = None
             served: str | None = None
             delivered = False
+            answered = False
+            finish_reason: str | None = None
             try:
                 events = provider.stream(
                     target.id,
@@ -416,6 +420,10 @@ class FreeAI(_ClientBase):
                         chunk = to_chunk(target, event)
                         if chunk.usage is not None:
                             usage = chunk.usage
+                        if chunk.finish_reason is not None:
+                            finish_reason = chunk.finish_reason
+                        if stream_chunk_answered(chunk):
+                            answered = True
                         if not delivered and not chunk.has_output:
                             continue  # role-only preambles: nothing committed to this model yet
                         delivered = True
@@ -431,6 +439,10 @@ class FreeAI(_ClientBase):
             except BaseException:
                 plan.release(target)  # includes GeneratorExit when the caller stops iterating
                 raise
+            if not answered and finish_reason == "length":
+                failure = output_limit_failure(target)
+                plan.failed(target, failure, started, usage=usage)
+                raise OutputLimitError(failure.message, plan.attempts) from None
             if not delivered and router.retry_on_empty:
                 plan.failed(target, empty_stream(target), started, usage=usage)
                 continue

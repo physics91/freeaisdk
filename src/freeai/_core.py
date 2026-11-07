@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal, TypedDict
 
 from ._admission import Admission
-from ._messages import Messages, empty_stream, to_chunk, to_response
+from ._messages import Messages, empty_stream, output_limit_failure, stream_chunk_answered, to_chunk, to_response
 from ._observe import Observe
 from ._order import OrderPolicy
 from ._order import _rank as _rank  # re-export for ``from freeai._core import _rank``
@@ -50,6 +50,8 @@ __all__ = [
     "RouterOptions",
     "Wait",
     "empty_stream",
+    "output_limit_failure",
+    "stream_chunk_answered",
     "to_chunk",
     "to_response",
 ]

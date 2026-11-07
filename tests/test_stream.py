@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from freeai import FailureKind, StreamInterrupted
+from freeai import FailureKind, OutputLimitError, StreamInterrupted
 from freeai._http import Headers
 from freeai._plan import Plan
 from freeai._sse import is_event_stream
@@ -48,6 +48,23 @@ def test_stream_yields_text(make_ai, server):
     assert "".join(c.text for c in chunks) == "Hello"
     assert chunks[-1].finish_reason == "stop"
     assert server.calls[0]["stream"] is True
+
+
+def test_stream_output_limit_raises_without_failover(make_ai, server):
+    server.on(ALPHA, sse(delta(role=True), delta(finish="length")))
+    server.on(BETA, sse(delta("ok")))
+    with pytest.raises(OutputLimitError, match="max_tokens"):
+        list(make_ai().stream("hi", max_tokens=16))
+    assert server.models_called == [ALPHA]
+
+
+def test_stream_reasoning_only_length_raises_output_limit(make_ai, server):
+    thinking = {"model": "x", "choices": [{"index": 0, "delta": {"reasoning": "..."}}]}
+    server.on(ALPHA, sse(thinking, delta(finish="length")))
+    server.on(BETA, sse(delta("ok")))
+    with pytest.raises(OutputLimitError, match="max_tokens"):
+        list(make_ai().stream("hi", max_tokens=16))
+    assert server.models_called == [ALPHA]
 
 
 def test_error_event_before_output_fails_over(make_ai, server):
