@@ -117,7 +117,9 @@ def _estimate_tokens(payload: Mapping[str, Any]) -> float:
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":
-                    chars += len(str(part.get("text", "")))
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        chars += len(text)
                 else:
                     attachments += 1
         if isinstance(message, dict) and message.get("tool_calls"):

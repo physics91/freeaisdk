@@ -8,7 +8,7 @@ import pytest
 
 from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, ProviderFailure, RetryBudget
 from freeai._core import Wait
-from freeai._messages import content_text, to_response
+from freeai._messages import _estimate_tokens, content_text, to_response
 from freeai._sse import EventReader
 from freeai.health import HealthStats
 
@@ -187,6 +187,12 @@ def test_content_text_ignores_null_and_non_str_parts():
     assert content_text([{"type": "text", "text": None}, {"type": "text", "text": "hi"}]) == "hi"
     assert content_text([{"type": "text", "text": 1}]) == ""
     assert content_text("plain") == "plain"
+
+
+def test_estimate_tokens_skips_null_text_parts():
+    payload = {"messages": [{"role": "user", "content": [{"type": "text", "text": None}]}]}
+    # Default output reserve only; null text must not become len("None").
+    assert _estimate_tokens(payload) == float(512)
 
 
 def test_health_latency_seeds_from_first_success_after_failures():
