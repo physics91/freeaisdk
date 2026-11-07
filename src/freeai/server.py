@@ -97,12 +97,16 @@ class _Handler(BaseHTTPRequestHandler):
             return
         messages = body.pop("messages", None)
         model = body.pop("model", None)
-        stream = bool(body.pop("stream", False))
+        stream = body.pop("stream", False)
         if not isinstance(messages, list) or not messages:
             self._error(400, "messages must be a non-empty list", "invalid_request_error", "invalid_messages")
             return
         if model is not None and not isinstance(model, str):
             self._error(400, "model must be a string", "invalid_request_error", "invalid_model")
+            return
+        if not isinstance(stream, bool):
+            # ``bool("false")`` is True; only JSON booleans are accepted.
+            self._error(400, "stream must be a boolean", "invalid_request_error", "invalid_stream")
             return
         try:
             if stream:

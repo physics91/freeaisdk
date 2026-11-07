@@ -139,6 +139,13 @@ def test_proxy_request_validation(proxy, monkeypatch):
         ).status_code
         == 400
     )
+    # Raw JSON so stream stays a string; httpx would coerce Python bools.
+    fake_stream = httpx.post(
+        f"{url}/chat/completions",
+        content=b'{"messages":[{"role":"user","content":"x"}],"stream":"false"}',
+        headers={"content-type": "application/json"},
+    )
+    assert fake_stream.status_code == 400 and fake_stream.json()["error"]["code"] == "invalid_stream"
     bad = httpx.post(
         f"{url}/chat/completions", json={"messages": [{"role": "user", "content": "x"}], "models": ["paid"]}
     )
