@@ -154,8 +154,9 @@ def quota_ready_at(
     tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str
 ) -> float:
     ready = now
+    requests, tokens = cost.requests, cost.tokens
     for limit in limits:
-        amount = cost.of(limit.unit)
+        amount = requests if limit.unit == "requests" else tokens
         if amount > 0 and limit.applies_to(model_id):
             ready = max(ready, _window_ready(limit, tx.get(limit.key(provider, model_id)), amount, now, tz))
     return ready
@@ -166,8 +167,9 @@ def quota_charge(
 ) -> list[tuple[str, float]]:
     """Charge windows for ``cost``; return ``(quota_key, amount)`` pairs actually charged."""
     charges: list[tuple[str, float]] = []
+    requests, tokens = cost.requests, cost.tokens
     for limit in limits:
-        amount = cost.of(limit.unit)
+        amount = requests if limit.unit == "requests" else tokens
         if amount > 0 and limit.applies_to(model_id):
             key = limit.key(provider, model_id)
             tx[key] = _window_add(limit, tx.get(key), amount, now, tz)
