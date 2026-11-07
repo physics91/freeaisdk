@@ -218,6 +218,15 @@ def test_catalog_context_length_accepts_float_rejects_bool():
     assert _catalog_model("p", {"id": "x", "context_length": True}).context_length is None
 
 
+def test_openrouter_quota_accepts_float_rejects_bool():
+    from freeai import OpenRouter
+
+    provider = OpenRouter(api_key="k")
+    snaps = provider._parse_quota({"data": {"free_model_daily_requests": {"used": 5.0, "limit": 50.0}}})
+    assert len(snaps) == 1 and snaps[0].remaining == 45
+    assert provider._parse_quota({"data": {"free_model_daily_requests": {"used": True, "limit": 50}}}) == []
+
+
 def test_needed_context_treats_zero_length_as_known():
     class _Req:
         cost = type("C", (), {"tokens": 99.0})()

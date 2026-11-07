@@ -10,7 +10,7 @@ from .._http import Headers, embedded_header_names
 from ..errors import FailureKind, Scope
 from ..limits import RateSnapshot
 from ..types import ModelInfo
-from ._catalog import _catalog_items, _catalog_model, _is_zero_priced
+from ._catalog import _as_int, _catalog_items, _catalog_model, _is_zero_priced
 from ._classify import _metadata
 from ._impl import Provider, Tier, Verdict
 
@@ -132,9 +132,10 @@ class OpenRouter(Provider):
     def _parse_quota(self, body: Any) -> list[RateSnapshot]:
         data = body.get("data", body) if isinstance(body, dict) else {}
         daily = data.get("free_model_daily_requests") if isinstance(data, dict) else None
-        if not isinstance(daily, dict) or not isinstance(daily.get("used"), int):
+        if not isinstance(daily, dict):
             return []
-        limit = daily.get("limit")
-        if not isinstance(limit, int) or limit <= 0:
+        used = _as_int(daily.get("used"))
+        limit = _as_int(daily.get("limit"))
+        if used is None or limit is None or limit <= 0:
             return []
-        return [RateSnapshot("day", "requests", limit, max(0, limit - daily["used"]), "provider")]
+        return [RateSnapshot("day", "requests", limit, max(0, limit - used), "provider")]
