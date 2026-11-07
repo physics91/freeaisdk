@@ -34,26 +34,36 @@ _CAPABILITY_PARAMS = ("tools", "tool_choice", "response_format", "reasoning")
 _RESERVED_PARAMS = {"messages", "stream", "models"}
 # Only choices[0] is read, so extra choices would just burn quota (and Groq/Cerebras reject n != 1).
 _STRIPPED_PARAMS = {"n"}
-_TOKEN_LIMIT_PARAMS = ("max_tokens", "max_completion_tokens")
+_FLOAT_PARAMS = ("temperature", "top_p", "frequency_penalty", "presence_penalty")
+_INT_PARAMS = ("max_tokens", "max_completion_tokens", "top_k")
 
 
-def _coerce_token_limits(params: dict[str, Any]) -> dict[str, Any]:
-    """Turn numeric-string token limits into ints so upstream JSON stays typed correctly."""
+def _coerce_numeric_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Turn numeric-string sampling/limit fields into numbers for upstream JSON."""
     changed = False
     out = params
-    for name in _TOKEN_LIMIT_PARAMS:
-        if name not in out:
-            continue
-        number = _usage_number(out[name])
-        if number is None:
-            continue
-        as_int = int(number)
-        if out[name] == as_int:
-            continue
+
+    def take(name: str, value: int | float) -> None:
+        nonlocal changed, out
+        if out[name] == value:
+            return
         if not changed:
             out = dict(params)
             changed = True
-        out[name] = as_int
+        out[name] = value
+
+    for name in _FLOAT_PARAMS:
+        if name not in out:
+            continue
+        number = _usage_number(out[name])
+        if number is not None:
+            take(name, number)
+    for name in _INT_PARAMS:
+        if name not in out:
+            continue
+        number = _usage_number(out[name])
+        if number is not None:
+            take(name, int(number))
     return out
 
 
@@ -86,7 +96,7 @@ class PreparePolicy:
         if reserved:
             raise TypeError(f"unsupported keyword(s) {sorted(reserved)}: use model=[...] or stream()")
         chat_messages = _normalize_messages(messages, system)
-        params = _coerce_token_limits(params)
+        params = _coerce_numeric_params(params)
         if _STRIPPED_PARAMS.intersection(params):
             params = {k: v for k, v in params.items() if k not in _STRIPPED_PARAMS}
         parameters = set(require) | {name for name in _CAPABILITY_PARAMS if _param_active(params.get(name))}
