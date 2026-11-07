@@ -286,6 +286,10 @@ def test_attempt_attributes_follow_genai_conventions():
         Attempt("groq", "m", True, 0.1, usage={"prompt_tokens": 3.0, "completion_tokens": 2.0})
     )
     assert (floated["gen_ai.usage.input_tokens"], floated["gen_ai.usage.output_tokens"]) == (3, 2)
+    as_str = attempt_attributes(
+        Attempt("groq", "m", True, 0.1, usage={"prompt_tokens": "3", "completion_tokens": "2.0"})
+    )
+    assert (as_str["gen_ai.usage.input_tokens"], as_str["gen_ai.usage.output_tokens"]) == (3, 2)
     assert "gen_ai.usage.input_tokens" not in attempt_attributes(
         Attempt("groq", "m", True, 0.1, usage={"prompt_tokens": True})
     )

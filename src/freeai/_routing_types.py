@@ -80,15 +80,31 @@ def _covered(*groups: Iterable[RateSnapshot]) -> set[tuple[str, str]]:
     return {(s.per, s.unit) for group in groups for s in group}
 
 
+def _usage_number(value: Any) -> float | None:
+    """Token counts from usage objects; JSON may send floats or numeric strings."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
 def _total_tokens(usage: Mapping[str, Any] | None) -> float | None:
     if not isinstance(usage, Mapping):
         return None
-    total = usage.get("total_tokens")
-    if isinstance(total, (int, float)) and not isinstance(total, bool):
-        return float(total)
+    if (total := _usage_number(usage.get("total_tokens"))) is not None:
+        return total
     parts = [
-        float(value)
+        number
         for key in ("prompt_tokens", "completion_tokens")
-        if isinstance(value := usage.get(key), (int, float)) and not isinstance(value, bool)
+        if (number := _usage_number(usage.get(key))) is not None
     ]
     return float(sum(parts)) if parts else None

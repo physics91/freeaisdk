@@ -246,6 +246,9 @@ def test_total_tokens_sums_partial_usage_fields():
     assert _total_tokens({"prompt_tokens": 10, "completion_tokens": 5}) == 15.0
     assert _total_tokens({"prompt_tokens": 10}) == 10.0
     assert _total_tokens({"completion_tokens": 0}) == 0.0
+    assert _total_tokens({"total_tokens": "15.0"}) == 15.0
+    assert _total_tokens({"prompt_tokens": "10", "completion_tokens": "5"}) == 15.0
+    assert _total_tokens({"total_tokens": True}) is None
     assert _total_tokens({}) is None
     assert _total_tokens(None) is None
 

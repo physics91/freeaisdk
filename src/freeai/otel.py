@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ._routing_types import _usage_number
 from .types import Attempt
 
 __all__ = ["attempt_attributes", "instrument"]
@@ -34,11 +35,9 @@ def attempt_attributes(attempt: Attempt) -> dict[str, AttributeValue]:
         ("prompt_tokens", "gen_ai.usage.input_tokens"),
         ("completion_tokens", "gen_ai.usage.output_tokens"),
     ):
-        value = usage.get(source)
-        # JSON may decode counts as float; bool must not become 0/1 token attributes.
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            continue
-        attributes[target] = int(value)
+        number = _usage_number(usage.get(source))
+        if number is not None:
+            attributes[target] = int(number)
     if not attempt.ok:
         attributes["error.type"] = str(attempt.kind or "unknown")
         if attempt.scope is not None:
