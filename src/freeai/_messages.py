@@ -38,6 +38,11 @@ def _tool_call_items(value: Any) -> tuple[dict[str, Any], ...]:
     return tuple(item for item in value if isinstance(item, dict))
 
 
+def _response_str(value: Any) -> str | None:
+    """API ``model`` / ``finish_reason`` fields; non-strings are treated as missing."""
+    return value if isinstance(value, str) else None
+
+
 def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool) -> ChatResponse:
     raw_choices = data.get("choices")
     choices = raw_choices if isinstance(raw_choices, list) else []
@@ -47,8 +52,9 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
     raw_message = choice.get("message")
     message = raw_message if isinstance(raw_message, dict) else {}
     text = content_text(message.get("content"))
+    finish_reason = _response_str(choice.get("finish_reason"))
     if not text.strip() and not _tool_call_items(message.get("tool_calls")):
-        if choice.get("finish_reason") == "length":
+        if finish_reason == "length":
             raise ProviderFailure(
                 FailureKind.OUTPUT_LIMIT,
                 f"{model.provider}: {model.id} used the whole max_tokens budget (likely on reasoning) "
@@ -59,10 +65,10 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
     return ChatResponse(
         text=text,
         provider=model.provider,
-        model=data.get("model") or model.id,
+        model=_response_str(data.get("model")) or model.id,
         requested_model=model.id,
         message=message,
-        finish_reason=choice.get("finish_reason"),
+        finish_reason=finish_reason,
         usage=data.get("usage"),
         raw=data,
     )
@@ -80,10 +86,10 @@ def to_chunk(model: ModelInfo, event: dict[str, Any]) -> StreamChunk:
     return StreamChunk(
         text=content_text(delta.get("content")),
         provider=model.provider,
-        model=event.get("model") or model.id,
+        model=_response_str(event.get("model")) or model.id,
         reasoning=reasoning if isinstance(reasoning, str) else "",
         tool_calls=_tool_call_items(delta.get("tool_calls")),
-        finish_reason=choice.get("finish_reason"),
+        finish_reason=_response_str(choice.get("finish_reason")),
         usage=event.get("usage"),
         raw=event,
     )
