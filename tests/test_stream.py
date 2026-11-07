@@ -133,7 +133,16 @@ def test_whitespace_only_stream_fails_over(make_ai, server):
     from freeai.types import StreamChunk
 
     assert StreamChunk(text="  \n", provider="p", model="m").has_output is False
+    assert StreamChunk(text="", reasoning="  \n", provider="p", model="m").has_output is False
     server.on(ALPHA, sse(delta(role=True), delta("  \n"), delta(finish="stop")))
+    server.on(BETA, sse(delta("ok"), delta(finish="stop")))
+    assert "".join(c.text for c in make_ai().stream("hi")) == "ok"
+    assert server.models_called == [ALPHA, BETA]
+
+
+def test_whitespace_only_reasoning_stream_fails_over(make_ai, server):
+    thinking = {"model": "x", "choices": [{"index": 0, "delta": {"reasoning": "  \n"}}]}
+    server.on(ALPHA, sse(delta(role=True), thinking, delta(finish="stop")))
     server.on(BETA, sse(delta("ok"), delta(finish="stop")))
     assert "".join(c.text for c in make_ai().stream("hi")) == "ok"
     assert server.models_called == [ALPHA, BETA]
