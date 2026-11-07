@@ -73,7 +73,9 @@ class Groq(Provider):
 
     def prepare_payload(self, model_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         body = super().prepare_payload(model_id, payload)
-        body["messages"] = [_without(message, "name") for message in body.get("messages", [])]
+        messages = body.get("messages", [])
+        if any(isinstance(message, dict) and "name" in message for message in messages):
+            body["messages"] = [_without(message, "name") for message in messages]
         return body
 
     def rate_snapshots(self, headers: Mapping[str, str]) -> list[RateSnapshot]:
