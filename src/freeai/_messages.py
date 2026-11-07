@@ -19,11 +19,16 @@ def _param_active(value: Any) -> bool:
     """True when a request param meaningfully asks for a capability.
 
     Empty ``tools=[]`` / ``tool_choice=""`` / ``response_format={}``, falsy scalars such as
-    ``reasoning=False`` / ``0``, and ``tool_choice="none"`` must not narrow candidates or force
-    OpenRouter ``require_parameters``.
+    ``reasoning=False`` / ``0``, ``tool_choice="none"``, and the OpenAI default
+    ``response_format={"type": "text"}`` must not narrow candidates or force OpenRouter
+    ``require_parameters``.
     """
     if isinstance(value, str) and value.strip().casefold() == "none":
         return False
+    if isinstance(value, Mapping):
+        if set(value) <= {"type"} and str(value.get("type", "")).casefold() in {"", "text", "none"}:
+            return False
+        return bool(value)
     return bool(value)
 
 
