@@ -87,9 +87,10 @@ class _Handler(BaseHTTPRequestHandler):
         self._started = False
         if not self._authorized():
             return
-        if self._path() != "/v1/chat/completions":
+        path = self._path()
+        if path != "/v1/chat/completions":
             self.close_connection = True  # the body was not read
-            self._error(404, f"no route for POST {self._path()}", "invalid_request_error", "not_found")
+            self._error(404, f"no route for POST {path}", "invalid_request_error", "not_found")
             return
         body = self._read_json()
         if body is None:
