@@ -18,8 +18,9 @@ _DEFAULT_OUTPUT_TOKENS = 512  # output reserve when the caller sets no max_token
 
 
 def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool) -> ChatResponse:
-    choice = data["choices"][0]
-    if not isinstance(choice, dict) or choice.get("finish_reason") == "error":
+    choices = data.get("choices") or []
+    choice = choices[0] if choices and isinstance(choices[0], dict) else None
+    if choice is None or choice.get("finish_reason") == "error":
         raise ProviderFailure(FailureKind.UNAVAILABLE, f"{model.provider}: {model.id} returned an error choice")
     message = choice.get("message") or {}
     text = content_text(message.get("content"))

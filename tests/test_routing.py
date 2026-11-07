@@ -6,8 +6,9 @@ import random
 import httpx
 import pytest
 
-from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, RetryBudget
+from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, ProviderFailure, RetryBudget
 from freeai._core import Wait
+from freeai._messages import to_response
 from freeai._sse import EventReader
 
 from .conftest import FakeClock, FakeServer, error, ok, sse
@@ -171,3 +172,11 @@ def test_stream_early_exit_releases_the_slot(clock):
         break
     gc.collect()
     assert ai.chat("hi").text == "hello"  # the abandoned stream did not keep the only slot
+
+
+@pytest.mark.parametrize("body", [{}, {"choices": []}, {"choices": [None]}, {"choices": ["x"]}])
+def test_to_response_missing_choices_is_unavailable(body):
+    model = ModelInfo(provider="p", id="m")
+    with pytest.raises(ProviderFailure) as info:
+        to_response(model, body, retry_on_empty=True)
+    assert info.value.kind is FailureKind.UNAVAILABLE
