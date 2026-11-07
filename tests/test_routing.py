@@ -225,6 +225,17 @@ def test_json_as_stream_string_message_becomes_content():
     assert to_chunk(ModelInfo(provider="p", id="m"), events[0]).text == "hello"
 
 
+def test_completion_requires_list_choices():
+    from freeai._http import Headers
+
+    provider = Provider("p", "https://example/v1", api_key="k", models=["m"])
+    for body in ({"choices": "bad"}, {"choices": 1}, {"choices": []}):
+        with pytest.raises(ProviderFailure):
+            provider._completion(200, Headers(), body)
+        with pytest.raises(ProviderFailure):
+            list(provider._json_as_stream(Headers(), body))
+
+
 def test_content_text_ignores_null_and_non_str_parts():
     assert content_text([{"type": "text", "text": None}, {"type": "text", "text": "hi"}]) == "hi"
     assert content_text([{"type": "text", "text": 1}]) == ""
