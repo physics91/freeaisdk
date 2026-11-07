@@ -18,7 +18,7 @@ from ._routing_types import (
     _provider_key,
     _total_tokens,
 )
-from .cooldown import cooldown_fail
+from .cooldown import cooldown_fail, cooldown_ready_at
 from .errors import (
     SKIP_FOR_REQUEST,
     ExhaustedError,
@@ -240,7 +240,7 @@ class Plan:
                     pending_drop(tx, reservation.id, reservation.keys)
                 now = router.clock()
                 for key in (_model_key(sid, model.id), _provider_key(sid)):
-                    if key in tx and float(tx[key]["until"]) <= now:
+                    if key in tx and cooldown_ready_at(tx, key) <= now:
                         del tx[key]  # recovered: reset the backoff (never cut a cooldown set meanwhile)
                 used = _total_tokens(usage)
                 if used is not None:
