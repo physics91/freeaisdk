@@ -230,10 +230,13 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
         if order < 0:  # the window this reading counted has already ended
             seen = _quota_number(old.get("seen")) or 0.0
             until = _quota_number(old.get("until"))
-        elif order == 0 and requests and old is not None:
-            old_seen = _quota_number(old.get("seen"))
-            if old_seen is not None:
-                seen = max(seen, old_seen)
+        elif order == 0 and old is not None:
+            # Requests never go backwards. Tokens may drop (unused output handed back), but the
+            # window end must not: a past until would make the window look empty.
+            if requests:
+                old_seen = _quota_number(old.get("seen"))
+                if old_seen is not None:
+                    seen = max(seen, old_seen)
             if until is not None:
                 old_until = _quota_number(old.get("until"))
                 if old_until is not None:

@@ -24,6 +24,7 @@ from freeai import (
     SQLiteStore,
     rpd,
     rpm,
+    tpd,
     tpm,
 )
 from freeai._core import Wait, _learned_key, _rank
@@ -337,6 +338,20 @@ def test_lower_token_readings_are_taken_unless_their_window_ended():
     assert tx[key]["used"] == 1000
     quota_observe(tx, "p", "m2", minute(7500, 58.0), now + 1, "UTC")  # unused output handed back
     assert tx[key]["used"] == 500
+
+
+def test_same_window_token_until_does_not_move_backward():
+    """Token seen may drop, but a same-window until must not reopen the day early."""
+    tx: dict = {}
+    now = 10_000.0
+    key = quota_observe(tx, "p", "m", RateSnapshot("day", "tokens", 1000, 100, reset_in=3600), now, "UTC").key(
+        "p", "m"
+    )
+    assert tx[key]["until"] == pytest.approx(now + 3600)
+    quota_observe(tx, "p", "m", RateSnapshot("day", "tokens", 1000, 200, reset_in=-50), now, "UTC")
+    assert tx[key]["seen"] == 800  # unused tokens handed back
+    assert tx[key]["until"] == pytest.approx(now + 3600)
+    assert quota_ready_at(tx, [tpd(1000)], "p", "m", Cost(0, 500), now, "UTC") > now
 
 
 def test_groq_charges_its_chat_template_too(server, clock):
