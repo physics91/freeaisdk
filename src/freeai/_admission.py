@@ -80,7 +80,12 @@ class Admission:
                 # Skip learned/limits/cost work while a cooldown already keeps the candidate busy.
                 if ready <= now:
                     if sid not in learned_by_sid:
-                        learned_by_sid[sid] = list(tx.get(_learned_key(sid), []))
+                        raw_learned = tx.get(_learned_key(sid), [])
+                        learned_by_sid[sid] = (
+                            [row for row in raw_learned if isinstance(row, Mapping)]
+                            if isinstance(raw_learned, list)
+                            else []
+                        )
                     limits = self.limits(tx, provider, model.id, learned=learned_by_sid[sid])
                     cost = self._cost(provider, request)
                     ready = quota_ready_at(tx, limits, sid, model.id, cost, now, provider.reset_tz)
@@ -119,9 +124,15 @@ class Admission:
         sid = provider.state_id
         limits = [limit for limit in provider.limits if limit.applies_to(model_id)]
         keys = {limit.key(sid, model_id) for limit in limits}
-        entries = learned if learned is not None else tx.get(_learned_key(sid), [])
+        if learned is not None:
+            entries = learned
+        else:
+            raw = tx.get(_learned_key(sid), [])
+            entries = raw if isinstance(raw, list) else []
         for entry in entries:
-            if entry["model"] not in (None, model_id):
+            if not isinstance(entry, Mapping):
+                continue
+            if entry.get("model") not in (None, model_id):
                 continue
             observed = Limit(float(entry["amount"]), entry["per"], entry["unit"], entry["scope"], source="observed")
             key = observed.key(sid, model_id)

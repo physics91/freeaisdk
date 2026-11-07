@@ -49,11 +49,13 @@ def _cooldown_bundle(tx: State, sid: str) -> tuple[Any, dict[str, Any], bool]:
     (missing id means ready). Otherwise the map is empty and callers must use point lookups.
     """
     provider_entry = tx.get(_provider_key(sid))
+    if not isinstance(provider_entry, dict):
+        provider_entry = None
     items_with_prefix = getattr(tx, "items_with_prefix", None)
     if not callable(items_with_prefix):
         return provider_entry, {}, False
     prefix = f"cd:m:{sid}|"
-    models = {key.removeprefix(prefix): entry for key, entry in items_with_prefix(prefix)}
+    models = {key.removeprefix(prefix): entry for key, entry in items_with_prefix(prefix) if isinstance(entry, dict)}
     return provider_entry, models, True
 
 
