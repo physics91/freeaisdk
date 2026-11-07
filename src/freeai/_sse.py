@@ -68,7 +68,16 @@ def iter_sse(lines: Iterable[str]) -> Iterator[Any]:
 
 
 def is_event_stream(headers: Headers) -> bool:
-    return "text/event-stream" in headers.get("content-type", "text/event-stream")
+    """True when ``Content-Type``'s media type is ``text/event-stream`` (case-insensitive).
+
+    Missing or blank content types are not treated as SSE: a JSON 200 without ``Content-Type``
+    must take the JSON-as-stream path instead of an empty event-stream parse.
+    """
+    raw = headers.get("content-type")
+    if raw is None or not raw.strip():
+        return False
+    media_type = raw.split(";", 1)[0].strip().casefold()
+    return media_type == "text/event-stream"
 
 
 class EventReader:

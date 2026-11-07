@@ -1,11 +1,45 @@
+import json
+
+import httpx
 import pytest
 
 from freeai import FailureKind, StreamInterrupted
+from freeai._http import Headers
 from freeai._plan import Plan
+from freeai._sse import is_event_stream
 
-from .conftest import delta, error, sse
+from .conftest import completion, delta, error, sse
 
 ALPHA, BETA = "alpha/one:free", "beta/two:free"
+
+
+def test_is_event_stream_content_type():
+    assert is_event_stream(Headers({})) is False
+    assert is_event_stream(Headers({"content-type": ""})) is False
+    assert is_event_stream(Headers({"content-type": "   "})) is False
+    assert is_event_stream(Headers({"content-type": "application/json"})) is False
+    assert is_event_stream(Headers({"content-type": "Text/Event-Stream"})) is True
+    assert is_event_stream(Headers({"content-type": "text/event-stream; charset=utf-8"})) is True
+    assert is_event_stream(Headers({"content-type": "text/event-stream;charset=utf-8"})) is True
+
+
+def test_stream_json_without_content_type_yields_text(make_ai, server):
+    body = completion("secret")
+    server.on(ALPHA, httpx.Response(200, content=json.dumps(body).encode(), headers={}))
+    assert "".join(c.text for c in make_ai().stream("hi")) == "secret"
+
+
+def test_stream_accepts_mixed_case_event_stream_content_type(make_ai, server):
+    lines = [f"data: {json.dumps(delta('ok'))}", "data: [DONE]"]
+    server.on(
+        ALPHA,
+        httpx.Response(
+            200,
+            content=("\n\n".join(lines) + "\n\n").encode(),
+            headers={"content-type": "Text/Event-Stream"},
+        ),
+    )
+    assert "".join(c.text for c in make_ai().stream("hi")) == "ok"
 
 
 def test_stream_yields_text(make_ai, server):
