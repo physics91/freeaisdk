@@ -16,6 +16,7 @@ from ._routing_types import (
     _learned_key,
     _model_key,
     _provider_key,
+    _usage_number,
 )
 from .cooldown import _cooldown_failure_count, _cooldown_until, cooldown_failures, cooldown_ready_at
 from .limits import Cost, Limit, State, pending_add, pending_drop, quota_charge, quota_ready_at
@@ -27,6 +28,9 @@ from .types import ModelInfo
 # would be wiped; if a process dies, its reservations over-count for at most this long.
 _PENDING_TTL = 300.0
 _SLOT_POLL = 0.25  # re-check interval while a provider's concurrency slots or a probe are busy
+_LEARNED_WINDOWS = frozenset({"minute", "hour", "day", "month"})
+_LEARNED_UNITS = frozenset({"requests", "tokens"})
+_LEARNED_SCOPES = frozenset({"model", "provider"})
 
 
 class Admission:
@@ -134,10 +138,11 @@ class Admission:
                 continue
             if entry.get("model") not in (None, model_id):
                 continue
-            try:
-                observed = Limit(float(entry["amount"]), entry["per"], entry["unit"], entry["scope"], source="observed")
-            except (KeyError, TypeError, ValueError):
+            amount = _usage_number(entry.get("amount"))
+            per, unit, scope = entry.get("per"), entry.get("unit"), entry.get("scope")
+            if amount is None or per not in _LEARNED_WINDOWS or unit not in _LEARNED_UNITS or scope not in _LEARNED_SCOPES:
                 continue
+            observed = Limit(amount, per, unit, scope, source="observed")
             key = observed.key(sid, model_id)
             if key not in keys:
                 limits.append(observed)
