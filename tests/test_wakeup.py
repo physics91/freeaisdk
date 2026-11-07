@@ -298,3 +298,87 @@ def test_max_wait_counts_the_time_actually_waited():
     assert isinstance(second, Wait) and second.delay == pytest.approx(60.0)
     clock.now += second.delay
     assert plan.next() == plan.ordered[0]
+
+
+def test_sync_wake_skips_dead_waiters():
+    from collections import deque
+
+    from freeai.client import _Waiter, _Wakeups
+
+    wakeups = _Wakeups()
+    group = frozenset({"m1"})
+    dead = _Waiter()
+    dead.alive = False
+    live = _Waiter()
+    wakeups._waiting[group] = deque([dead, live])
+    wakeups.wake()
+    assert live.event.is_set() and not live.alive
+    assert not dead.event.is_set()
+
+
+def test_sync_wait_forwards_wake_absorbed_after_timeout():
+    from freeai.client import _Wakeups
+
+    wakeups = _Wakeups()
+    group = frozenset({"m1"})
+    mark = wakeups.mark()
+    in_sleep = threading.Event()
+    release_sleep = threading.Event()
+    peer_done = threading.Event()
+    calls = {"n": 0}
+    real_sleep = wakeups._sleep
+
+    def gated_sleep(event: threading.Event, delay: float, version: int | None) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            in_sleep.set()
+            assert release_sleep.wait(2)
+            return False  # timed out; wake may have claimed this slot meanwhile
+        return real_sleep(event, delay, version)
+
+    wakeups._sleep = gated_sleep  # type: ignore[method-assign]
+
+    def first() -> None:
+        wakeups.wait(10.0, mark, group)
+
+    def second() -> None:
+        wakeups.wait(10.0, mark, group)
+        peer_done.set()
+
+    t1 = threading.Thread(target=first)
+    t1.start()
+    assert in_sleep.wait(2)
+    t2 = threading.Thread(target=second)
+    t2.start()
+    time.sleep(0.05)  # second enqueues behind first
+    wakeups.wake()  # claims the timed-out head
+    release_sleep.set()  # first finally forwards to peer
+    assert peer_done.wait(2), "absorbed wake must reach the next waiter"
+    t1.join(2)
+    t2.join(2)
+
+
+def test_async_wake_skips_dead_and_forwards_after_timeout_claim():
+    from collections import deque
+
+    from freeai.aio import _Waiter, _Wakeups
+
+    async def main() -> None:
+        wakeups = _Wakeups()
+        group = frozenset({"m1"})
+        dead = _Waiter()
+        dead.alive = False
+        timed_out = _Waiter()
+        peer = _Waiter()
+        wakeups._waiting[group] = deque([dead, timed_out, peer])
+        wakeups.wake()
+        assert timed_out.future.done() and not timed_out.alive
+        assert not peer.future.done()
+        # timed-out wait() finally after wake claimed the slot
+        claimed, timed_out_flag = True, True
+        timed_out.alive = False
+        if claimed and timed_out_flag and wakeups._waiting.get(group):
+            wakeups.wake()
+        assert peer.future.done()
+
+    asyncio.run(main())

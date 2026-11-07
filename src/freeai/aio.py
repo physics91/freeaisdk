@@ -27,6 +27,16 @@ from .types import ChatResponse, ModelInfo, Requirements, StreamChunk
 __all__ = ["AsyncFreeAI"]
 
 
+class _Waiter:
+    """One async wait slot; ``alive`` is cleared when the wait ends or a wake claims it."""
+
+    __slots__ = ("future", "alive")
+
+    def __init__(self) -> None:
+        self.future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self.alive = True
+
+
 class _Wakeups:
     """Tasks of this client waiting for quota, grouped by the models they can still use.
 
@@ -36,7 +46,7 @@ class _Wakeups:
     """
 
     def __init__(self, version: Callable[[], int] | None = None) -> None:
-        self._waiting: dict[frozenset[str], deque[asyncio.Future[None]]] = {}
+        self._waiting: dict[frozenset[str], deque[_Waiter]] = {}
         self._version = version
         self._poller: asyncio.Task[None] | None = None
         self._changes = 0
@@ -50,9 +60,10 @@ class _Wakeups:
         for group in list(self._waiting):
             queue = self._waiting[group]
             while queue:
-                future = queue.popleft()
-                if not future.done():
-                    future.set_result(None)
+                waiter = queue.popleft()
+                if waiter.alive and not waiter.future.done():
+                    waiter.alive = False
+                    waiter.future.set_result(None)
                     break
             if not queue:
                 del self._waiting[group]
@@ -61,20 +72,28 @@ class _Wakeups:
         changes, version = mark
         if self._changes != changes:
             return
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._waiting.setdefault(group, deque()).append(future)
+        waiter = _Waiter()
+        self._waiting.setdefault(group, deque()).append(waiter)
         if version is not None and (self._poller is None or self._poller.done()):
             self._poller = asyncio.create_task(self._poll(version))
+        timed_out = False
         try:
-            await asyncio.wait_for(future, delay)
+            await asyncio.wait_for(asyncio.shield(waiter.future), delay)
         except TimeoutError:
-            pass
+            timed_out = True
         finally:
+            forward = False
+            claimed = not waiter.alive
+            waiter.alive = False
             queue = self._waiting.get(group)
-            if queue is not None and future in queue:
-                queue.remove(future)
+            if queue is not None and waiter in queue:
+                queue.remove(waiter)
                 if not queue:
                     del self._waiting[group]
+            # Wake took our slot after we timed out: pass the signal to the next peer.
+            forward = claimed and timed_out and bool(self._waiting.get(group))
+            if forward:
+                self.wake()
 
     async def _poll(self, version: int) -> None:
         while self._waiting:

@@ -50,6 +50,16 @@ def _read_version(version: Callable[[], int] | None) -> int | None:
         return None
 
 
+class _Waiter:
+    """One sync wait slot; ``alive`` is cleared when the wait ends or a wake claims it."""
+
+    __slots__ = ("event", "alive")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.alive = True
+
+
 class _Wakeups:
     """Requests of this client waiting for quota, grouped by the models they can still use.
 
@@ -62,7 +72,7 @@ class _Wakeups:
     def __init__(self, version: Callable[[], int] | None = None) -> None:
         self._lock = threading.Lock()
         self._changes = 0
-        self._waiting: dict[frozenset[str], deque[threading.Event]] = {}
+        self._waiting: dict[frozenset[str], deque[_Waiter]] = {}
         self._version = version
         self._reported = -math.inf  # when a waiting thread last reported another process's change
 
@@ -73,42 +83,58 @@ class _Wakeups:
     def wake(self) -> None:
         with self._lock:
             self._changes += 1
-            for queue in self._waiting.values():
-                queue.popleft().set()
-            self._waiting = {group: queue for group, queue in self._waiting.items() if queue}
+            for group in list(self._waiting):
+                queue = self._waiting[group]
+                while queue:
+                    waiter = queue.popleft()
+                    if waiter.alive:
+                        waiter.alive = False
+                        waiter.event.set()
+                        break
+                if not queue:
+                    del self._waiting[group]
 
     def wait(self, delay: float, mark: tuple[int, int | None], group: frozenset[str]) -> None:
         """Sleep up to ``delay``; return early when woken, or at once if a change came since ``mark``."""
         changes, version = mark
-        event = threading.Event()
+        waiter = _Waiter()
         with self._lock:
             if self._changes != changes:
                 return
-            self._waiting.setdefault(group, deque()).append(event)
+            self._waiting.setdefault(group, deque()).append(waiter)
+        woken = False
         try:
-            self._sleep(event, delay, version)
+            woken = self._sleep(waiter.event, delay, version)
         finally:
+            forward = False
             with self._lock:
+                claimed = not waiter.alive
+                waiter.alive = False
                 queue = self._waiting.get(group)
-                if queue is not None and event in queue:
-                    queue.remove(event)
+                if queue is not None and waiter in queue:
+                    queue.remove(waiter)
                     if not queue:
                         del self._waiting[group]
+                # Wake took our slot after we timed out: pass the signal to the next peer.
+                forward = claimed and not woken and bool(self._waiting.get(group))
+            if forward:
+                self.wake()
 
-    def _sleep(self, event: threading.Event, delay: float, version: int | None) -> None:
+    def _sleep(self, event: threading.Event, delay: float, version: int | None) -> bool:
+        """Wait up to ``delay``; return whether the event was set (a wake arrived)."""
         deadline = time.monotonic() + delay
         if version is None:
-            event.wait(delay)
-            return
+            return event.wait(delay)
         looked = time.monotonic()
         while True:
             left = deadline - time.monotonic()
-            if left <= 0 or event.wait(min(left, _POLL_SECONDS)):
-                return
+            if left <= 0:
+                return event.is_set()
+            if event.wait(min(left, _POLL_SECONDS)):
+                return True
             current = _read_version(self._version)
             if current is None:  # the store failed: sleep out the rest
-                event.wait(max(0.0, deadline - time.monotonic()))
-                return
+                return event.wait(max(0.0, deadline - time.monotonic()))
             now = time.monotonic()
             if current != version:
                 version = current
