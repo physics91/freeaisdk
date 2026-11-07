@@ -208,6 +208,18 @@ def test_estimate_tokens_honors_zero_max_tokens():
     assert _estimate_tokens(base) == float(512)
 
 
+def test_prepare_coerces_string_token_limits():
+    from freeai._prepare import ALIASES, PreparePolicy
+
+    prepare = PreparePolicy(aliases=ALIASES, allow_training=True, by_name={})
+    request = prepare.prepare("hi", None, None, (), None, {"max_tokens": "50"})
+    assert request.payload["max_tokens"] == 50
+    assert request.cost.tokens == _estimate_tokens(request.payload)
+    both = prepare.prepare("hi", None, None, (), None, {"max_tokens": "1", "max_completion_tokens": "2.0"})
+    assert both.payload["max_tokens"] == 1
+    assert both.payload["max_completion_tokens"] == 2
+
+
 def test_catalog_empty_supported_parameters_means_unknown():
     model = _catalog_model("p", {"id": "x", "supported_parameters": []})
     assert model.supported_parameters is None

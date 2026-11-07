@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from ._messages import Messages, _estimate_tokens, _input_modalities, _normalize_messages, _param_active
-from ._routing_types import Request
+from ._routing_types import Request, _usage_number
 from .limits import Cost
 from .providers import Provider
 from .types import ModelInfo, Requirements
@@ -34,6 +34,27 @@ _CAPABILITY_PARAMS = ("tools", "tool_choice", "response_format", "reasoning")
 _RESERVED_PARAMS = {"messages", "stream", "models"}
 # Only choices[0] is read, so extra choices would just burn quota (and Groq/Cerebras reject n != 1).
 _STRIPPED_PARAMS = {"n"}
+_TOKEN_LIMIT_PARAMS = ("max_tokens", "max_completion_tokens")
+
+
+def _coerce_token_limits(params: dict[str, Any]) -> dict[str, Any]:
+    """Turn numeric-string token limits into ints so upstream JSON stays typed correctly."""
+    changed = False
+    out = params
+    for name in _TOKEN_LIMIT_PARAMS:
+        if name not in out:
+            continue
+        number = _usage_number(out[name])
+        if number is None:
+            continue
+        as_int = int(number)
+        if out[name] == as_int:
+            continue
+        if not changed:
+            out = dict(params)
+            changed = True
+        out[name] = as_int
+    return out
 
 
 class PreparePolicy:
@@ -65,6 +86,7 @@ class PreparePolicy:
         if reserved:
             raise TypeError(f"unsupported keyword(s) {sorted(reserved)}: use model=[...] or stream()")
         chat_messages = _normalize_messages(messages, system)
+        params = _coerce_token_limits(params)
         if _STRIPPED_PARAMS.intersection(params):
             params = {k: v for k, v in params.items() if k not in _STRIPPED_PARAMS}
         parameters = set(require) | {name for name in _CAPABILITY_PARAMS if _param_active(params.get(name))}
