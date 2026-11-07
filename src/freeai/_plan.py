@@ -275,7 +275,7 @@ class Plan:
 
     def _needed_context(self, failed: ModelInfo) -> int:
         """After a context-length rejection, require a window larger than the one that failed."""
-        if failed.context_length:
+        if failed.context_length is not None:
             return failed.context_length + 1
         return int(self.request.cost.tokens)
 

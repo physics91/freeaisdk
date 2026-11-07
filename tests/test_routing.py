@@ -9,6 +9,7 @@ import pytest
 from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, ProviderFailure, RetryBudget
 from freeai._core import Wait
 from freeai._messages import _estimate_tokens, content_text, to_response
+from freeai._plan import Plan
 from freeai._sse import EventReader
 from freeai.health import HealthStats
 from freeai.providers._catalog import _catalog_model
@@ -208,6 +209,17 @@ def test_catalog_empty_supported_parameters_means_unknown():
     model = _catalog_model("p", {"id": "x", "supported_parameters": []})
     assert model.supported_parameters is None
     assert model.satisfies(Requirements(parameters=frozenset({"tools"})))
+
+
+def test_needed_context_treats_zero_length_as_known():
+    class _Req:
+        cost = type("C", (), {"tokens": 99.0})()
+
+    class _Holder:
+        request = _Req()
+
+    assert Plan._needed_context(_Holder(), ModelInfo(provider="p", id="m", context_length=0)) == 1
+    assert Plan._needed_context(_Holder(), ModelInfo(provider="p", id="m")) == 99
 
 
 def test_health_latency_seeds_from_first_success_after_failures():
