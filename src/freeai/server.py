@@ -168,12 +168,13 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._error(411, "Content-Length required", "invalid_request_error", "length_required")
             return None
-        if int(length) > MAX_BODY_BYTES:
+        size = int(length)
+        if size > MAX_BODY_BYTES:
             self.close_connection = True
             self._error(413, "request body too large", "invalid_request_error", "body_too_large")
             return None
         try:
-            body = json.loads(self.rfile.read(int(length)) or b"{}")
+            body = json.loads(self.rfile.read(size) or b"{}")
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._error(400, "body is not valid JSON", "invalid_request_error", "invalid_json")
             return None
