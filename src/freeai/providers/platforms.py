@@ -130,15 +130,16 @@ class ZAI(Provider):
     ) -> None:
         super().__init__(name, base_url, api_key=api_key, **kwargs)
 
-    def _quota_reset_hint(self, error: dict[str, Any]) -> float:
-        match = _ZAI_RESET_RE.search(error_text(error))
+    def _quota_reset_hint(self, error: dict[str, Any], text: str | None = None) -> float:
+        body = text if text is not None else error_text(error)
+        match = _ZAI_RESET_RE.search(body)
         if match:
             try:
                 moment = datetime.fromisoformat(match.group(1).replace(" ", "T")).replace(tzinfo=_zone(self.reset_tz))
                 return max(0.0, moment.timestamp() - time.time())
             except ValueError:
                 pass
-        return super()._quota_reset_hint(error)
+        return super()._quota_reset_hint(error, body)
 
 
 class Kilo(Provider):
@@ -367,5 +368,3 @@ class Mistral(Provider):
         **kwargs: Any,
     ) -> None:
         super().__init__(name, base_url, api_key=api_key, **kwargs)
-
-

@@ -186,12 +186,13 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
         headers = Headers(headers)
         error = error_object(body)
         code = _effective_status(error, status)
-        kind, scope = self._verdict(code, headers, error, error_text(error))
+        text = error_text(error)
+        kind, scope = self._verdict(code, headers, error, text)
         hint = None
         if kind in _HINTED_KINDS or code == 503:
             hint = retry_hint(headers, error, reset_headers=self.reset_headers)
         if kind is FailureKind.QUOTA_EXHAUSTED and hint is None:
-            hint = self._quota_reset_hint(error)
+            hint = self._quota_reset_hint(error, text)
         return ProviderFailure(
             kind,
             f"{self.name}: {_message(error, body, code)}",
@@ -221,12 +222,12 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
             return FailureKind.QUOTA_EXHAUSTED, None
         return FailureKind.RATE_LIMIT, None
 
-    def _quota_reset_hint(self, error: dict[str, Any]) -> float:
+    def _quota_reset_hint(self, error: dict[str, Any], text: str | None = None) -> float:
         """Without a server hint, an exhausted allowance lasts until the next reset boundary."""
-        if _MONTHLY_RE.search(error_text(error)):
+        body = text if text is not None else error_text(error)
+        if _MONTHLY_RE.search(body):
             return seconds_until("month", time.time(), self.reset_tz)
         return seconds_until_midnight(self.reset_tz)
 
 
 _VERIFIED = "2026-11-06"
-
