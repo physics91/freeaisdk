@@ -68,7 +68,14 @@ def content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+        # Some platforms send ``{"type":"text","text":null}``; treat non-str as empty.
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
     return ""
 
 

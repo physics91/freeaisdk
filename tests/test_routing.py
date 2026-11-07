@@ -8,7 +8,7 @@ import pytest
 
 from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, ProviderFailure, RetryBudget
 from freeai._core import Wait
-from freeai._messages import to_response
+from freeai._messages import content_text, to_response
 from freeai._sse import EventReader
 from freeai.health import HealthStats
 
@@ -181,6 +181,12 @@ def test_to_response_missing_choices_is_unavailable(body):
     with pytest.raises(ProviderFailure) as info:
         to_response(model, body, retry_on_empty=True)
     assert info.value.kind is FailureKind.UNAVAILABLE
+
+
+def test_content_text_ignores_null_and_non_str_parts():
+    assert content_text([{"type": "text", "text": None}, {"type": "text", "text": "hi"}]) == "hi"
+    assert content_text([{"type": "text", "text": 1}]) == ""
+    assert content_text("plain") == "plain"
 
 
 def test_health_latency_seeds_from_first_success_after_failures():
