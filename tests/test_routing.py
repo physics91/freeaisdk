@@ -70,6 +70,27 @@ def test_reject_response_fails_over_without_cooldown(make_ai, server):
     assert ai.status()["models"] == {}
 
 
+def test_reject_response_exception_keeps_request_quota(clock):
+    server = FakeServer()
+    server.on("m1", ok("x"), ok("y"))
+    n = {"i": 0}
+
+    def hook(_response):
+        n["i"] += 1
+        if n["i"] == 1:
+            raise RuntimeError("hook boom")
+        return False
+
+    ai = make(clock, plain(server, models=["m1"], limits=[rpm(1)]), reject_response=hook)
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi")
+    assert info.value.attempts[0].kind is FailureKind.REJECTED
+    assert "hook boom" in (info.value.attempts[0].message or "")
+    with pytest.raises(ExhaustedError) as again:
+        ai.chat("hi")
+    assert again.value.next_available_in == pytest.approx(61.0)
+
+
 def test_health_strategy_sinks_failing_models(clock):
     server = FakeServer()
     server.on("m1", error(500, "down"))

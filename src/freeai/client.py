@@ -207,6 +207,7 @@ class FreeAI(_ClientBase):
     - ``allow_training=False`` keeps only models that do not train on prompts (OpenRouter is asked
       per request not to collect data).
     - ``reject_response``: ``callable(ChatResponse) -> bool | str``; a truthy result fails over.
+      Exceptions from the hook are treated as a rejection (not a hard abort).
     - ``store``: :class:`~freeai.SQLiteStore` to share cooldowns and quotas between processes. The
       caller owns it: :meth:`close` does not close the store.
     - ``clock``: wall-clock seconds (default :func:`time.time`). State is stored as epoch time so
@@ -284,7 +285,20 @@ class FreeAI(_ClientBase):
                     raise OutputLimitError(failure.message, plan.attempts, raw) from failure
                 continue
             except BaseException:
-                plan.release(target)
+                if completion is not None:
+                    # Platform already answered; keep request quota (do not plan.release-refund).
+                    plan.failed(
+                        target,
+                        ProviderFailure(
+                            FailureKind.REJECTED,
+                            f"{target.provider}: {target.id}: aborted after response",
+                        ),
+                        started,
+                        completion.snapshots,
+                        usage=completion.body.get("usage") if isinstance(completion.body, dict) else None,
+                    )
+                else:
+                    plan.release(target)
                 raise
             plan.succeeded(
                 target, started, snapshots=completion.snapshots, usage=response.usage, served_model=response.model

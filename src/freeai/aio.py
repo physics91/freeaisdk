@@ -160,7 +160,19 @@ class AsyncFreeAI(_ClientBase):
                     raise OutputLimitError(failure.message, plan.attempts, raw) from failure
                 continue
             except BaseException:
-                plan.release(target)  # includes task cancellation
+                if completion is not None:
+                    plan.failed(
+                        target,
+                        ProviderFailure(
+                            FailureKind.REJECTED,
+                            f"{target.provider}: {target.id}: aborted after response",
+                        ),
+                        started,
+                        completion.snapshots,
+                        usage=completion.body.get("usage") if isinstance(completion.body, dict) else None,
+                    )
+                else:
+                    plan.release(target)  # includes task cancellation before a response
                 raise
             plan.succeeded(
                 target, started, snapshots=completion.snapshots, usage=response.usage, served_model=response.model
