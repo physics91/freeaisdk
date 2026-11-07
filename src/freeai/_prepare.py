@@ -65,7 +65,8 @@ class PreparePolicy:
         if reserved:
             raise TypeError(f"unsupported keyword(s) {sorted(reserved)}: use model=[...] or stream()")
         chat_messages = _normalize_messages(messages, system)
-        params = {k: v for k, v in params.items() if k not in _STRIPPED_PARAMS}
+        if _STRIPPED_PARAMS.intersection(params):
+            params = {k: v for k, v in params.items() if k not in _STRIPPED_PARAMS}
         parameters = set(require) | {name for name in _CAPABILITY_PARAMS if params.get(name) is not None}
         requirements = Requirements(frozenset(parameters), _input_modalities(chat_messages), min_context)
         models: tuple[str, ...] = (model,) if isinstance(model, str) else tuple(model or ())
