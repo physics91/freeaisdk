@@ -10,6 +10,7 @@ from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo,
 from freeai._core import Wait
 from freeai._messages import _estimate_tokens, content_text, to_response
 from freeai._plan import Plan
+from freeai._routing_types import _total_tokens
 from freeai._sse import EventReader
 from freeai.health import HealthStats
 from freeai.providers._catalog import _catalog_model
@@ -220,6 +221,15 @@ def test_needed_context_treats_zero_length_as_known():
 
     assert Plan._needed_context(_Holder(), ModelInfo(provider="p", id="m", context_length=0)) == 1
     assert Plan._needed_context(_Holder(), ModelInfo(provider="p", id="m")) == 99
+
+
+def test_total_tokens_sums_partial_usage_fields():
+    assert _total_tokens({"total_tokens": 15}) == 15.0
+    assert _total_tokens({"prompt_tokens": 10, "completion_tokens": 5}) == 15.0
+    assert _total_tokens({"prompt_tokens": 10}) == 10.0
+    assert _total_tokens({"completion_tokens": 0}) == 0.0
+    assert _total_tokens({}) is None
+    assert _total_tokens(None) is None
 
 
 def test_health_latency_seeds_from_first_success_after_failures():

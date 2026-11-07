@@ -86,7 +86,9 @@ def _total_tokens(usage: Mapping[str, Any] | None) -> float | None:
     total = usage.get("total_tokens")
     if isinstance(total, (int, float)) and not isinstance(total, bool):
         return float(total)
-    parts = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
-    if all(isinstance(p, (int, float)) and not isinstance(p, bool) for p in parts):
-        return float(sum(parts))  # type: ignore[arg-type]
-    return None
+    parts = [
+        float(value)
+        for key in ("prompt_tokens", "completion_tokens")
+        if isinstance(value := usage.get(key), (int, float)) and not isinstance(value, bool)
+    ]
+    return float(sum(parts)) if parts else None
