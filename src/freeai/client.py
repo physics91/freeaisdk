@@ -414,7 +414,8 @@ class FreeAI(_ClientBase):
                 with closing(events):
                     for event in events:
                         chunk = to_chunk(target, event)
-                        usage = chunk.usage or usage
+                        if chunk.usage is not None:
+                            usage = chunk.usage
                         if not delivered and not chunk.has_output:
                             continue  # role-only preambles: nothing committed to this model yet
                         delivered = True
