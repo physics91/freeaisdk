@@ -77,13 +77,15 @@ class _Wakeups:
         self._waiting.setdefault(group, deque()).append(waiter)
         if version is not None and (self._poller is None or self._poller.done()):
             self._poller = asyncio.create_task(self._poll(version))
-        timed_out = False
+        left_early = False
         try:
             await asyncio.wait_for(asyncio.shield(waiter.future), delay)
         except TimeoutError:
-            timed_out = True
+            left_early = True
+        except asyncio.CancelledError:
+            left_early = True
+            raise
         finally:
-            forward = False
             claimed = not waiter.alive
             waiter.alive = False
             queue = self._waiting.get(group)
@@ -91,9 +93,8 @@ class _Wakeups:
                 queue.remove(waiter)
                 if not queue:
                     del self._waiting[group]
-            # Wake took our slot after we timed out: pass the signal to the next peer.
-            forward = claimed and timed_out and bool(self._waiting.get(group))
-            if forward:
+            # Wake claimed us after timeout/cancel: pass the signal to the next peer.
+            if claimed and left_early and self._waiting.get(group):
                 self.wake()
 
     async def _poll(self, version: int) -> None:
@@ -101,7 +102,7 @@ class _Wakeups:
             await asyncio.sleep(_POLL_SECONDS)
             current = _read_version(self._version)
             if current is None:
-                return
+                continue  # transient store failure: keep polling while waiters remain
             if current != version:
                 version = current
                 self.wake()
@@ -310,7 +311,8 @@ class AsyncFreeAI(_ClientBase):
                 async with aclosing(events):
                     async for event in events:
                         chunk = to_chunk(target, event)
-                        wire_model = event.get("model") if isinstance(event.get("model"), str) else None
+                        raw_model = event.get("model")
+                        wire_model = raw_model if isinstance(raw_model, str) and raw_model else None
                         if chunk.usage is not None:
                             usage = chunk.usage
                         if chunk.finish_reason is not None:

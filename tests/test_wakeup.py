@@ -382,3 +382,56 @@ def test_async_wake_skips_dead_and_forwards_after_timeout_claim():
         assert peer.future.done()
 
     asyncio.run(main())
+
+
+def test_async_cancel_forwards_claimed_wake():
+    from freeai.aio import _Wakeups
+
+    async def main() -> None:
+        wakeups = _Wakeups()
+        group = frozenset({"m1"})
+        mark = wakeups.mark()
+
+        async def first() -> None:
+            await wakeups.wait(5.0, mark, group)
+
+        async def second() -> None:
+            await wakeups.wait(5.0, mark, group)
+
+        t1 = asyncio.create_task(first())
+        t2 = asyncio.create_task(second())
+        await asyncio.sleep(0)
+        wakeups.wake()
+        t1.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t1
+        await asyncio.wait_for(t2, 1)
+
+    asyncio.run(main())
+
+
+def test_async_poller_survives_transient_version_failure():
+    from freeai.aio import _Wakeups
+    from freeai.client import _POLL_SECONDS
+
+    async def main() -> None:
+        calls = {"n": 0}
+
+        def version() -> int:
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise RuntimeError("transient")
+            return 1
+
+        wakeups = _Wakeups(version=version)
+        group = frozenset({"m1"})
+        mark = wakeups.mark()
+        task = asyncio.create_task(wakeups.wait(10.0, mark, group))
+        await asyncio.sleep(0)
+        await asyncio.sleep(_POLL_SECONDS + 0.05)
+        assert wakeups._poller is not None and not wakeups._poller.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
