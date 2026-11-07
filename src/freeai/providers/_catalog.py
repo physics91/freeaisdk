@@ -27,7 +27,8 @@ def _catalog_model(provider: str, item: dict[str, Any], *, is_router: bool = Fal
         name=item.get("name") if isinstance(item.get("name"), str) else None,
         context_length=context if isinstance(context, int) else None,
         input_modalities=frozenset(inputs) if isinstance(inputs, list) and inputs else None,
-        supported_parameters=frozenset(parameters) if isinstance(parameters, list) else None,
+        # Empty list means "not reported" (same as missing), not "supports nothing".
+        supported_parameters=frozenset(parameters) if isinstance(parameters, list) and parameters else None,
         is_router=is_router,
     )
 

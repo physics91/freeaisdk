@@ -11,6 +11,8 @@ from freeai._core import Wait
 from freeai._messages import _estimate_tokens, content_text, to_response
 from freeai._sse import EventReader
 from freeai.health import HealthStats
+from freeai.providers._catalog import _catalog_model
+from freeai.types import Requirements
 
 from .conftest import FakeClock, FakeServer, error, ok, sse
 
@@ -200,6 +202,12 @@ def test_estimate_tokens_honors_zero_max_tokens():
     assert _estimate_tokens({**base, "max_tokens": 0}) == 0.0
     assert _estimate_tokens({**base, "max_completion_tokens": 0}) == 0.0
     assert _estimate_tokens(base) == float(512)
+
+
+def test_catalog_empty_supported_parameters_means_unknown():
+    model = _catalog_model("p", {"id": "x", "supported_parameters": []})
+    assert model.supported_parameters is None
+    assert model.satisfies(Requirements(parameters=frozenset({"tools"})))
 
 
 def test_health_latency_seeds_from_first_success_after_failures():
