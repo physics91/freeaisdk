@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 from .._http import AsyncClient, Client, Limits, Timeout
@@ -20,16 +22,17 @@ class TransportMixin:
     Expects Provider fields set in ``__init__`` (``timeout``, ``base_url``, clients, locks, keys).
     """
 
-    def _headers(self) -> dict[str, str]:
-        """Stable auth/extra headers. Built once; callers must not mutate the returned dict."""
+    def _headers(self) -> Mapping[str, str]:
+        """Stable auth/extra headers. Built once and frozen so callers cannot poison the cache."""
         cached = getattr(self, "_headers_cached", None)
         if cached is not None:
             return cached
         headers = dict(self._extra_headers)
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        self._headers_cached = headers
-        return headers
+        frozen = MappingProxyType(headers)
+        self._headers_cached = frozen
+        return frozen
 
     def _require_key(self) -> None:
         if not self.api_key and not self.keyless:

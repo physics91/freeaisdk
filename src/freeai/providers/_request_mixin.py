@@ -83,9 +83,7 @@ class RequestMixin:
                     yield from events
                     return
                 self._stream_preamble(status, resp_headers, None, on_snapshots)
-                reader = EventReader(
-                    self.name, resp_headers, first_token_timeout, classify=self.classify
-                )
+                reader = EventReader(self.name, resp_headers, first_token_timeout, classify=self.classify)
                 yield from reader.consume(response.iter_lines())
         except TransportError as exc:
             raise self._transport_failure(exc) from exc
@@ -115,9 +113,7 @@ class RequestMixin:
                         yield event
                     return
                 self._stream_preamble(status, resp_headers, None, on_snapshots)
-                reader = EventReader(
-                    self.name, resp_headers, first_token_timeout, classify=self.classify
-                )
+                reader = EventReader(self.name, resp_headers, first_token_timeout, classify=self.classify)
                 async for event in reader.aconsume(response.aiter_lines()):
                     yield event
         except TransportError as exc:
@@ -145,7 +141,7 @@ class RequestMixin:
 
     def _request(
         self, model_id: str, payload: Mapping[str, Any], *, stream: bool
-    ) -> tuple[str, dict[str, Any], dict[str, str]]:
+    ) -> tuple[str, dict[str, Any], Mapping[str, str]]:
         body = self.prepare_payload(model_id, payload)
         if stream:
             body["stream"] = True
