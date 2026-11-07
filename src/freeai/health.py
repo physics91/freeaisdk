@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -26,7 +27,7 @@ class HealthStats:
         stat = self._stats.setdefault(key, _Ewma())
         a = self.alpha if stat.samples else 1.0
         stat.success = (1 - a) * stat.success + a * (1.0 if ok else 0.0)
-        if ok:
+        if ok and math.isfinite(latency):
             lat = max(latency, 0.0)
             if stat.latency is None:
                 stat.latency = lat
