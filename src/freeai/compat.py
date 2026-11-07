@@ -36,8 +36,9 @@ def parse_model(model: str | Sequence[str] | None) -> str | tuple[str, ...] | No
 
 def completion_dict(response: ChatResponse) -> dict[str, Any]:
     body = dict(response.raw)
-    body.setdefault("id", f"freeai-{int(time.time() * 1000)}")
-    body.setdefault("created", int(time.time()))
+    now = time.time()
+    body.setdefault("id", f"freeai-{int(now * 1000)}")
+    body.setdefault("created", int(now))
     body["object"] = "chat.completion"
     body["model"] = response.model
     body["x_freeai"] = _origin(response.provider, response.requested_model, len(response.attempts))
