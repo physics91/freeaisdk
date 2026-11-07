@@ -211,8 +211,10 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
     if rolling and limit.per in _WINDOW_SECONDS:
         interval = _WINDOW_SECONDS[limit.per] / max(snapshot.limit, 1e-9)
         served = now + seen * interval  # when the platform's own count is whole again
-        if requests and old and "served" in old and float(old.get("amount", 0.0)) == snapshot.limit:
-            served = max(served, float(old["served"]))  # only ever moves forward for requests
+        old_amount = _quota_number(old.get("amount")) if old else None
+        old_served = _quota_number(old.get("served")) if old else None
+        if requests and old_amount == snapshot.limit and old_served is not None:
+            served = max(served, old_served)  # only ever moves forward for requests
         tat = served + _pending_total(tx, key, now) * interval
         state: dict[str, Any] = {"tat": tat, "amount": snapshot.limit, "since": now}
         if requests:
@@ -222,11 +224,16 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
         period = _period(limit.per, now, tz) if limit.per not in _ROLLING_BY_DEFAULT else None
         order = _reading_order(limit.per, old, until, period)
         if order < 0:  # the window this reading counted has already ended
-            seen, until = float(old["seen"]), float(old["until"])
-        elif order == 0 and requests:
-            seen = max(seen, float(old["seen"]))
+            seen = _quota_number(old.get("seen")) or 0.0
+            until = _quota_number(old.get("until"))
+        elif order == 0 and requests and old is not None:
+            old_seen = _quota_number(old.get("seen"))
+            if old_seen is not None:
+                seen = max(seen, old_seen)
             if until is not None:
-                until = max(until, float(old["until"]))
+                old_until = _quota_number(old.get("until"))
+                if old_until is not None:
+                    until = max(until, old_until)
         state = {"used": seen + _pending_total(tx, key, now), "seen": seen, "amount": snapshot.limit}
         if period is not None:
             state["period"] = period
@@ -241,19 +248,29 @@ def _quota_state(value: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _quota_number(value: Any) -> float | None:
+    """Numeric quota field; bools and non-numeric strings are rejected."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _reading_order(per: Window, old: dict[str, Any] | None, until: float | None, period: str | None) -> int:
     """Whether a fixed-window reading is of an earlier (-1), the same (0) or a later (1) window.
 
     ``old`` is the state the last reading left. Readings of one window report resets a rounding
     error apart, and a window's successor ends a whole window later. Unknown counts as later.
     """
-    if not old or "seen" not in old or old.get("period") != period:
+    if not old or _quota_number(old.get("seen")) is None or old.get("period") != period:
         return 1
-    old_until = old.get("until")
+    old_until = _quota_number(old.get("until")) if "until" in old else None
     if until is None or old_until is None:
         return 0 if until is None and old_until is None else 1
     half = _WINDOW_SECONDS.get(per, _WINDOW_SECONDS["day"]) / 2
-    delta = until - float(old_until)
+    delta = until - old_until
     return -1 if delta <= -half else 0 if delta < half else 1
 
 
@@ -312,17 +329,19 @@ def _pending_total(tx: State, key: str, now: float) -> float:
 
 
 def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) -> float:
-    state = _quota_state(state)
-    capacity = float(state.get("amount", limit.amount)) if state else limit.amount
+    state = _usable_quota_state(state)
+    capacity_n = _quota_number(state.get("amount")) if state else None
+    capacity = limit.amount if capacity_n is None else capacity_n
     if _rolling(limit.per, state):
         period = _WINDOW_SECONDS[limit.per]
         interval = period / capacity
-        tat = float(state["tat"]) if state else now  # GCRA: when the window is whole again
+        tat = _quota_number(state.get("tat")) if state else now
         if tat <= now:
             return now
         # A single request larger than the window waits until it is whole again.
         due = tat if amount >= capacity else tat + amount * interval - period
-        if due <= float(state.get("since", -math.inf)):
+        since = _quota_number(state.get("since")) if state else None
+        if due <= (since if since is not None else -math.inf):
             return now  # covered by what was left when the window started refilling
         return max(now, due + EDGE_MARGIN)
     used = _used_in_period(limit, state, now, tz)
@@ -333,22 +352,28 @@ def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) 
 
 
 def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) -> dict[str, Any]:
-    state = _quota_state(state)
-    capacity = float(state.get("amount", limit.amount)) if state else limit.amount
+    state = _usable_quota_state(state)
+    capacity_n = _quota_number(state.get("amount")) if state else None
+    capacity = limit.amount if capacity_n is None else capacity_n
     if _rolling(limit.per, state):
         interval = _WINDOW_SECONDS[limit.per] / capacity
-        tat = float(state["tat"]) if state else now
+        tat = _quota_number(state.get("tat")) if state else now
         if tat <= now:  # whole: refilling starts with this charge
             return {"tat": max(now, now + amount * interval), "amount": capacity, "since": now}
-        since = float(state.get("since", now))
+        since = _quota_number(state.get("since"))
+        if since is None:
+            since = now
         added_tat: dict[str, Any] = {"tat": max(now, tat + amount * interval), "amount": capacity, "since": since}
-        if "served" in state:
-            added_tat["served"] = state["served"]  # the platform's count, if it reported one
+        served = _quota_number(state.get("served"))
+        if served is not None:
+            added_tat["served"] = served  # the platform's count, if it reported one
         return added_tat
     used = _used_in_period(limit, state, now, tz)
     added: dict[str, Any] = {"used": max(0.0, used + amount), "amount": capacity}
-    if state and "seen" in state and _in_window(limit, state, now, tz):
-        added["seen"] = state["seen"]  # the platform's count for this window, if it reported one
+    if state and _in_window(limit, state, now, tz):
+        seen = _quota_number(state.get("seen"))
+        if seen is not None:
+            added["seen"] = seen  # the platform's count for this window, if it reported one
     if limit.per not in _ROLLING_BY_DEFAULT:
         added["period"] = _period(limit.per, now, tz)
     until = _window_end(limit.per, state, now)
@@ -357,19 +382,32 @@ def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) ->
     return added
 
 
+def _usable_quota_state(value: Any) -> dict[str, Any] | None:
+    """Drop non-dict rows and rolling rows whose ``tat`` is not numeric."""
+    state = _quota_state(value)
+    if state and "tat" in state and _quota_number(state.get("tat")) is None:
+        return None
+    return state
+
+
 def _rolling(per: Window, state: dict[str, Any] | None) -> bool:
     """Whether a window refills continuously (GCRA) or counts up to a reset; headers may decide."""
     return "tat" in state if state else per in _ROLLING_BY_DEFAULT
 
 
 def _used_in_period(limit: Limit, state: dict[str, Any] | None, now: float, tz: str) -> float:
-    return float(state.get("used", 0.0)) if state and _in_window(limit, state, now, tz) else 0.0
+    if not state or not _in_window(limit, state, now, tz):
+        return 0.0
+    return _quota_number(state.get("used")) or 0.0
 
 
 def _in_window(limit: Limit, state: dict[str, Any], now: float, tz: str) -> bool:
     """Whether ``now`` is still in the fixed window ``state`` counts."""
-    if state.get("until") is not None:  # the server said when this window resets
-        return now < float(state["until"]) + EDGE_MARGIN
+    until = _quota_number(state.get("until")) if "until" in state else None
+    if until is not None:  # the server said when this window resets
+        return now < until + EDGE_MARGIN
+    if "until" in state:
+        return False  # corrupt until: do not trust this row
     return bool(state.get("period") == _period(limit.per, now, tz))
 
 
@@ -380,10 +418,10 @@ def _window_end(per: Window, state: dict[str, Any] | None, now: float) -> float 
     rounded and our clock is not the platform's. Minute and hour windows repeat, so once one is
     over this is the end of the window ``now`` falls in.
     """
-    until = state.get("until") if state else None
+    until = _quota_number(state.get("until")) if state else None
     if until is None:
         return None
-    end = float(until)
+    end = until
     if now < end + EDGE_MARGIN:
         return end
     if per in _ROLLING_BY_DEFAULT:
