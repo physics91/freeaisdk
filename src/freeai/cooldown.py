@@ -56,7 +56,7 @@ class CooldownPolicy:
         }
         if kind in fixed:
             return fixed[kind]
-        if hint is not None:
+        if hint is not None and math.isfinite(hint):
             return min(max(hint, _MIN_HINT), self.max_hint)
         if kind is FailureKind.QUOTA_EXHAUSTED:
             return self.quota_exhausted

@@ -68,9 +68,11 @@ def retry_hint(
 def _header_delay(headers: Headers, reset_headers: tuple[str, ...], wall: float) -> float | None:
     if value := headers.get("retry-after-ms"):
         try:
-            return max(0.0, float(value) / 1000)
+            number = float(value) / 1000
         except ValueError:
-            pass
+            number = None
+        if number is not None and math.isfinite(number):
+            return max(0.0, number)
     if value := headers.get("retry-after"):
         delay = _parse_retry_after(value.strip(), wall)
         if delay is not None:
@@ -131,13 +133,16 @@ def _parse_proto_duration(value: Any) -> float | None:
 
 def _parse_retry_after(value: str, wall: float) -> float | None:
     try:
-        return max(0.0, float(value))
+        number = float(value)
     except ValueError:
-        pass
+        number = None
+    if number is not None and math.isfinite(number):
+        return max(0.0, number)
     try:
-        return max(0.0, email.utils.parsedate_to_datetime(value).timestamp() - wall)
+        delay = email.utils.parsedate_to_datetime(value).timestamp() - wall
     except (TypeError, ValueError):
         return None
+    return max(0.0, delay) if math.isfinite(delay) else None
 
 
 def parse_reset(value: str, wall: float) -> float | None:
