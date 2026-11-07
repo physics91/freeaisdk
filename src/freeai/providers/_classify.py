@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from ..errors import FailureKind
+from ._catalog import _as_int
 
 _KIND_BY_STATUS = {
     400: FailureKind.BAD_REQUEST,
@@ -31,12 +32,11 @@ _NOT_ENTITLED_RE = re.compile(r"data policy|subscription|upgrade your plan|not a
 
 def _effective_status(error: dict[str, Any], status: int) -> int:
     code = error.get("code")
-    if isinstance(code, int) and not isinstance(code, bool) and 100 <= code < 600:
-        return code
-    if isinstance(code, str) and code.isdigit():
+    parsed = _as_int(code)
+    if parsed is None and isinstance(code, str) and code.isdigit():
         parsed = int(code)
-        if 100 <= parsed < 600:
-            return parsed
+    if parsed is not None and 100 <= parsed < 600:
+        return parsed
     if status != 200:
         return status
     metadata = _metadata(error)

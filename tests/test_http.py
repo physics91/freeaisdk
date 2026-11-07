@@ -4,6 +4,7 @@ import pytest
 from freeai import CooldownPolicy, FailureKind, Gemini, Groq, OpenRouter, Provider, Scope
 from freeai._http import _zone, error_object, retry_hint, seconds_until_midnight
 from freeai._sse import iter_sse
+from freeai.providers._classify import _effective_status
 
 NOW = 1_700_000_000.0
 
@@ -246,3 +247,13 @@ def test_cooldown_policy():
 def test_zone_is_cached():
     assert _zone("America/Los_Angeles") is _zone("America/Los_Angeles")
     assert _zone("UTC") is _zone("UTC")
+
+
+def test_effective_status_accepts_float_code():
+    assert _effective_status({"code": 429.0}, 200) == 429
+    assert _effective_status({"code": "503"}, 200) == 503
+    assert _effective_status({"code": True}, 200) == 502
+    assert kind_scope(OpenRouter(api_key="k"), 200, {"error": {"code": 429.0, "message": "free-models-per-min"}}) == (
+        FailureKind.PROVIDER_RATE_LIMIT,
+        Scope.PROVIDER,
+    )
