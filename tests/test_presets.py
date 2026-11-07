@@ -41,6 +41,9 @@ def test_cloudflare_needs_account_and_classifies_neuron_exhaustion(monkeypatch):
     daily_float = {"success": False, "errors": [{"code": 3036.0, "message": "daily free allocation"}]}
     float_failure = cf.classify(429, {}, daily_float)
     assert (float_failure.kind, float_failure.scope) == (FailureKind.QUOTA_EXHAUSTED, Scope.PROVIDER)
+    daily_str = {"success": False, "errors": [{"code": "3036.0", "message": "daily free allocation"}]}
+    str_failure = cf.classify(429, {}, daily_str)
+    assert (str_failure.kind, str_failure.scope) == (FailureKind.QUOTA_EXHAUSTED, Scope.PROVIDER)
 
     busy = cf.classify(429, {}, {"errors": [{"code": 3040, "message": "Out of capacity"}], "success": False})
     assert (busy.kind, busy.scope) == (FailureKind.UNAVAILABLE, Scope.MODEL)

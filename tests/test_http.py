@@ -252,8 +252,15 @@ def test_zone_is_cached():
 def test_effective_status_accepts_float_code():
     assert _effective_status({"code": 429.0}, 200) == 429
     assert _effective_status({"code": "503"}, 200) == 503
+    assert _effective_status({"code": "429.0"}, 200) == 429
+    assert _effective_status({"code": " 503 "}, 200) == 503
+    assert _effective_status({"code": "429.5"}, 200) == 502
     assert _effective_status({"code": True}, 200) == 502
     assert kind_scope(OpenRouter(api_key="k"), 200, {"error": {"code": 429.0, "message": "free-models-per-min"}}) == (
+        FailureKind.PROVIDER_RATE_LIMIT,
+        Scope.PROVIDER,
+    )
+    assert kind_scope(OpenRouter(api_key="k"), 200, {"error": {"code": "429.0", "message": "free-models-per-min"}}) == (
         FailureKind.PROVIDER_RATE_LIMIT,
         Scope.PROVIDER,
     )

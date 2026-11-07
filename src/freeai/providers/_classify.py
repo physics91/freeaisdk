@@ -31,11 +31,28 @@ _NOT_ENTITLED_RE = re.compile(r"data policy|subscription|upgrade your plan|not a
 
 
 def _parse_code_int(code: Any) -> int | None:
-    """Int/float/digit-string codes; ``None`` for bools and non-numeric labels."""
+    """Int/float/numeric-string codes; ``None`` for bools and non-numeric labels.
+
+    Accepts ``"429"``, ``"429.0"``, and whitespace-padded forms so stringified JSON
+    floats still map to HTTP / business codes.
+    """
     parsed = _as_int(code)
-    if parsed is None and isinstance(code, str) and code.isdigit():
-        return int(code)
-    return parsed
+    if parsed is not None:
+        return parsed
+    if not isinstance(code, str):
+        return None
+    text = code.strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if not number.is_integer():
+        return None
+    return int(number)
 
 
 def _code_key(code: Any) -> str:
