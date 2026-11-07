@@ -41,6 +41,7 @@ class ProxyServer(ThreadingHTTPServer):
             raise ValueError(f"refusing to listen on {address[0]} without a token: anyone could spend your quota")
         self.ai = ai
         self.token = token or None
+        self._token_bytes = None if self.token is None else self.token.encode()
         self._secrets = [p.api_key for p in ai.providers if p.api_key and len(p.api_key) >= 8]
         super().__init__(address, _Handler)
 
@@ -150,7 +151,12 @@ class _Handler(BaseHTTPRequestHandler):
         if token is None:
             return True
         scheme, _, given = self.headers.get("Authorization", "").partition(" ")
-        if scheme.lower() == "bearer" and hmac.compare_digest(given.strip().encode(), token.encode()):
+        expected = self.server._token_bytes
+        if (
+            scheme.lower() == "bearer"
+            and expected is not None
+            and hmac.compare_digest(given.strip().encode(), expected)
+        ):
             return True
         self.close_connection = True  # any request body stays unread
         self._error(
