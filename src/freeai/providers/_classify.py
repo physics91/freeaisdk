@@ -30,11 +30,17 @@ _BAD_KEY_RE = re.compile(r"api key not valid|invalid api key|incorrect api key|i
 _NOT_ENTITLED_RE = re.compile(r"data policy|subscription|upgrade your plan|not available (?:on|for) your")
 
 
-def _code_key(code: Any) -> str:
-    """Normalize business/error codes so ``3036.0`` and ``"3036"`` share one lookup key."""
+def _parse_code_int(code: Any) -> int | None:
+    """Int/float/digit-string codes; ``None`` for bools and non-numeric labels."""
     parsed = _as_int(code)
     if parsed is None and isinstance(code, str) and code.isdigit():
-        parsed = int(code)
+        return int(code)
+    return parsed
+
+
+def _code_key(code: Any) -> str:
+    """Normalize business/error codes so ``3036.0`` and ``"3036"`` share one lookup key."""
+    parsed = _parse_code_int(code)
     if parsed is not None:
         return str(parsed)
     return "" if code is None else str(code)
@@ -42,9 +48,7 @@ def _code_key(code: Any) -> str:
 
 def _effective_status(error: dict[str, Any], status: int) -> int:
     code = error.get("code")
-    parsed = _as_int(code)
-    if parsed is None and isinstance(code, str) and code.isdigit():
-        parsed = int(code)
+    parsed = _parse_code_int(code)
     if parsed is not None and 100 <= parsed < 600:
         return parsed
     if status != 200:
