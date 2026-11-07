@@ -14,6 +14,13 @@ def _catalog_items(body: Any) -> list[dict[str, Any]]:
     return [item for item in items if isinstance(item, dict)]
 
 
+def _as_context_length(value: Any) -> int | None:
+    """JSON numbers may arrive as float; bool must not count as a window size."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
 def _catalog_model(provider: str, item: dict[str, Any], *, is_router: bool = False) -> ModelInfo:
     """A ``ModelInfo`` from an OpenRouter-style catalog entry (shared by OpenRouter-like gateways)."""
     raw = item.get("architecture")
@@ -25,7 +32,7 @@ def _catalog_model(provider: str, item: dict[str, Any], *, is_router: bool = Fal
         provider=provider,
         id=str(item["id"]),
         name=item.get("name") if isinstance(item.get("name"), str) else None,
-        context_length=context if isinstance(context, int) else None,
+        context_length=_as_context_length(context),
         input_modalities=frozenset(inputs) if isinstance(inputs, list) and inputs else None,
         # Empty list means "not reported" (same as missing), not "supports nothing".
         supported_parameters=frozenset(parameters) if isinstance(parameters, list) and parameters else None,

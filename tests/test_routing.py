@@ -212,6 +212,12 @@ def test_catalog_empty_supported_parameters_means_unknown():
     assert model.satisfies(Requirements(parameters=frozenset({"tools"})))
 
 
+def test_catalog_context_length_accepts_float_rejects_bool():
+    assert _catalog_model("p", {"id": "x", "context_length": 128000.0}).context_length == 128000
+    assert _catalog_model("p", {"id": "x", "context_window": 8192.0}).context_length == 8192
+    assert _catalog_model("p", {"id": "x", "context_length": True}).context_length is None
+
+
 def test_needed_context_treats_zero_length_as_known():
     class _Req:
         cost = type("C", (), {"tokens": 99.0})()
