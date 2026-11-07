@@ -91,8 +91,7 @@ class Admission:
                 if ready <= now and (self._slots_full(provider) or self._probing.intersection(probes)):
                     ready = now + _SLOT_POLL
                 if ready <= now:
-                    quota_charge(tx, limits, sid, model.id, cost, now, provider.reset_tz)
-                    charges = [(lim.key(sid, model.id), cost.of(lim.unit)) for lim in limits if cost.of(lim.unit) > 0]
+                    charges = quota_charge(tx, limits, sid, model.id, cost, now, provider.reset_tz)
                     reservation = _NO_RESERVATION
                     if charges:
                         reservation = Reservation(secrets.token_hex(8), tuple(key for key, _ in charges))

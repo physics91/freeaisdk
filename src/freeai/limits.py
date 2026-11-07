@@ -161,12 +161,18 @@ def quota_ready_at(
     return ready
 
 
-def quota_charge(tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str) -> None:
+def quota_charge(
+    tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str
+) -> list[tuple[str, float]]:
+    """Charge windows for ``cost``; return ``(quota_key, amount)`` pairs actually charged."""
+    charges: list[tuple[str, float]] = []
     for limit in limits:
         amount = cost.of(limit.unit)
         if amount > 0 and limit.applies_to(model_id):
             key = limit.key(provider, model_id)
             tx[key] = _window_add(limit, tx.get(key), amount, now, tz)
+            charges.append((key, amount))
+    return charges
 
 
 def quota_adjust(
