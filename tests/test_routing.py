@@ -205,6 +205,15 @@ def test_tool_calls_require_list_of_dicts():
     assert info.value.kind is FailureKind.EMPTY
 
 
+def test_non_dict_message_or_delta_is_empty():
+    model = ModelInfo(provider="p", id="m")
+    with pytest.raises(ProviderFailure) as info:
+        to_response(model, {"choices": [{"message": "hello", "finish_reason": "stop"}]}, retry_on_empty=True)
+    assert info.value.kind is FailureKind.EMPTY
+    chunk = to_chunk(model, {"choices": [{"delta": "x", "finish_reason": "stop"}]})
+    assert chunk.text == "" and chunk.tool_calls == ()
+
+
 def test_content_text_ignores_null_and_non_str_parts():
     assert content_text([{"type": "text", "text": None}, {"type": "text", "text": "hi"}]) == "hi"
     assert content_text([{"type": "text", "text": 1}]) == ""

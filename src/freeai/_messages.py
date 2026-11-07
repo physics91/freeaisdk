@@ -43,7 +43,8 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
     choice = choices[0] if choices and isinstance(choices[0], dict) else None
     if choice is None or choice.get("finish_reason") == "error":
         raise ProviderFailure(FailureKind.UNAVAILABLE, f"{model.provider}: {model.id} returned an error choice")
-    message = choice.get("message") or {}
+    raw_message = choice.get("message")
+    message = raw_message if isinstance(raw_message, dict) else {}
     text = content_text(message.get("content"))
     if not text.strip() and not _tool_call_items(message.get("tool_calls")):
         if choice.get("finish_reason") == "length":
@@ -71,7 +72,8 @@ def to_chunk(model: ModelInfo, event: dict[str, Any]) -> StreamChunk:
     choice = choices[0] if choices and isinstance(choices[0], dict) else {}
     if choice.get("finish_reason") == "error":
         raise ProviderFailure(FailureKind.UNAVAILABLE, f"{model.provider}: {model.id} stream ended with an error")
-    delta = choice.get("delta") or {}
+    raw_delta = choice.get("delta")
+    delta = raw_delta if isinstance(raw_delta, dict) else {}
     reasoning = delta.get("reasoning") or delta.get("reasoning_content")
     return StreamChunk(
         text=content_text(delta.get("content")),
