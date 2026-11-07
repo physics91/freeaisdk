@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from ._messages import Messages, _estimate_tokens, _input_modalities, _normalize_messages
+from ._messages import Messages, _estimate_tokens, _input_modalities, _normalize_messages, _param_active
 from ._routing_types import Request
 from .limits import Cost
 from .providers import Provider
@@ -67,7 +67,7 @@ class PreparePolicy:
         chat_messages = _normalize_messages(messages, system)
         if _STRIPPED_PARAMS.intersection(params):
             params = {k: v for k, v in params.items() if k not in _STRIPPED_PARAMS}
-        parameters = set(require) | {name for name in _CAPABILITY_PARAMS if params.get(name) is not None}
+        parameters = set(require) | {name for name in _CAPABILITY_PARAMS if _param_active(params.get(name))}
         requirements = Requirements(frozenset(parameters), _input_modalities(chat_messages), min_context)
         models: tuple[str, ...] = (model,) if isinstance(model, str) else tuple(model or ())
         prefer: tuple[str, ...] = ()

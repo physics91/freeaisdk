@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .._http import Headers, embedded_header_names
+from .._messages import _param_active
 from ..errors import FailureKind, Scope
 from ..limits import RateSnapshot
 from ..types import ModelInfo
@@ -88,7 +89,7 @@ class OpenRouter(Provider):
 
     def prepare_payload(self, model_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         body = super().prepare_payload(model_id, payload)
-        if any(body.get(name) is not None for name in _STRICT_PARAMS):
+        if any(_param_active(body.get(name)) for name in _STRICT_PARAMS):
             # Without this OpenRouter may route to an endpoint that silently ignores tools/JSON mode.
             body["provider"] = {**(body.get("provider") or {}), "require_parameters": True}
         return body

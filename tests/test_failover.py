@@ -318,6 +318,22 @@ def test_openrouter_requires_parameters_for_tools(make_ai, server):
     assert "n" not in server.calls[0]
 
 
+def test_empty_capability_params_do_not_narrow():
+    from freeai._prepare import ALIASES, PreparePolicy
+    from freeai.providers.openrouter import OpenRouter
+
+    prepare = PreparePolicy(aliases=ALIASES, allow_training=True, by_name={})
+    for empty in ({"tools": []}, {"tool_choice": ""}, {"response_format": {}}):
+        request = prepare.prepare("hi", None, None, (), None, dict(empty))
+        assert request.requirements.parameters == frozenset()
+        body = OpenRouter(api_key="k").prepare_payload("m", {"messages": [], **empty})
+        assert "provider" not in body
+    request = prepare.prepare(
+        "hi", None, None, (), None, {"tools": [{"type": "function", "function": {"name": "w", "parameters": {}}}]}
+    )
+    assert "tools" in request.requirements.parameters
+
+
 def test_from_env_enables_only_free_tiers(monkeypatch):
     for preset in PRESETS.values():
         for name in preset.env:

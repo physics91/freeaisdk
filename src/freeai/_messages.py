@@ -12,6 +12,19 @@ from .types import ChatResponse, Message, ModelInfo, StreamChunk
 Messages = str | Sequence[Message]
 
 _PART_MODALITY = {"image_url": "image", "input_audio": "audio", "file": "file", "video_url": "video"}
+
+
+def _param_active(value: Any) -> bool:
+    """True when a request param meaningfully asks for a capability.
+
+    Empty ``tools=[]`` / ``tool_choice=""`` / ``response_format={}`` must not narrow
+    candidates or force OpenRouter ``require_parameters``.
+    """
+    if isinstance(value, (str, list, dict, tuple, set)):
+        return bool(value)
+    return value is not None
+
+
 _CHARS_PER_TOKEN = 4  # rough size estimate, refined by ``usage`` after each response
 _TOKENS_PER_ATTACHMENT = 1000  # images/audio/files count as a flat amount instead of their base64 size
 _DEFAULT_OUTPUT_TOKENS = 512  # output reserve when the caller sets no max_tokens
