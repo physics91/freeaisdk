@@ -148,6 +148,25 @@ def test_whitespace_only_reasoning_stream_fails_over(make_ai, server):
     assert server.models_called == [ALPHA, BETA]
 
 
+def test_reasoning_only_stop_stream_fails_over_like_chat(make_ai, server):
+    thinking = {"model": "x", "choices": [{"index": 0, "delta": {"reasoning": "think"}}]}
+    server.on(ALPHA, sse(thinking, delta(finish="stop")))
+    server.on(BETA, sse(delta("ok"), delta(finish="stop")))
+    chunks = list(make_ai().stream("hi"))
+    assert "".join(c.text for c in chunks) == "ok"
+    assert server.models_called == [ALPHA, BETA]
+
+
+def test_stream_keeps_wire_served_model_across_model_less_events(make_ai, server):
+    content = {"model": "real/served:free", "choices": [{"index": 0, "delta": {"content": "hi"}}]}
+    finish = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    seen = []
+    server.on(ALPHA, sse(content, finish))
+    chunks = list(make_ai(on_attempt=seen.append).stream("hi"))
+    assert [c.model for c in chunks] == ["real/served:free", "real/served:free"]
+    assert seen[-1].served_model == "real/served:free"
+
+
 def test_stream_validates_arguments_eagerly(make_ai):
     with pytest.raises(TypeError):
         make_ai().stream("hi", stream=True)

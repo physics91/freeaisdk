@@ -6,6 +6,7 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextlib import aclosing
+from dataclasses import replace
 from typing import Any, Self, Unpack
 
 from ._core import (
@@ -309,6 +310,7 @@ class AsyncFreeAI(_ClientBase):
                 async with aclosing(events):
                     async for event in events:
                         chunk = to_chunk(target, event)
+                        wire_model = event.get("model") if isinstance(event.get("model"), str) else None
                         if chunk.usage is not None:
                             usage = chunk.usage
                         if chunk.finish_reason is not None:
@@ -318,7 +320,13 @@ class AsyncFreeAI(_ClientBase):
                         if not delivered and not chunk.has_output:
                             continue
                         delivered = True
-                        served = chunk.model
+                        # Sticky wire model: later model-less events must not fall back to the request id.
+                        if wire_model is not None:
+                            served = wire_model
+                        elif served is None:
+                            served = chunk.model
+                        elif chunk.model != served:
+                            chunk = replace(chunk, model=served)
                         emitted.append(chunk.text)
                         yield chunk
             except ProviderFailure as failure:
@@ -334,7 +342,8 @@ class AsyncFreeAI(_ClientBase):
                 failure = output_limit_failure(target)
                 plan.failed(target, failure, started, usage=usage)
                 raise OutputLimitError(failure.message, plan.attempts) from None
-            if not delivered and router.retry_on_empty:
+            # Match chat EMPTY: reasoning-only (or other non-answer) streams fail over too.
+            if not answered and router.retry_on_empty:
                 plan.failed(target, empty_stream(target), started, usage=usage)
                 continue
             plan.succeeded(target, started, usage=usage, served_model=served)
