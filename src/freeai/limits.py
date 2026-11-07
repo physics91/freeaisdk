@@ -157,7 +157,7 @@ def quota_ready_at(
     requests, tokens = cost.requests, cost.tokens
     for limit in limits:
         amount = requests if limit.unit == "requests" else tokens
-        if amount > 0 and limit.applies_to(model_id):
+        if amount > 0 and math.isfinite(amount) and limit.applies_to(model_id):
             ready = max(ready, _window_ready(limit, tx.get(limit.key(provider, model_id)), amount, now, tz))
     return ready
 
@@ -170,7 +170,7 @@ def quota_charge(
     requests, tokens = cost.requests, cost.tokens
     for limit in limits:
         amount = requests if limit.unit == "requests" else tokens
-        if amount > 0 and limit.applies_to(model_id):
+        if amount > 0 and math.isfinite(amount) and limit.applies_to(model_id):
             key = limit.key(provider, model_id)
             tx[key] = _window_add(limit, tx.get(key), amount, now, tz)
             charges.append((key, amount))
@@ -182,7 +182,7 @@ def quota_adjust(
 ) -> None:
     """Settle an estimate (``delta`` > 0 charges more, < 0 refunds)."""
     for limit in limits:
-        if limit.unit == unit and delta and limit.applies_to(model_id):
+        if limit.unit == unit and delta and math.isfinite(delta) and limit.applies_to(model_id):
             key = limit.key(provider, model_id)
             tx[key] = _window_add(limit, tx.get(key), delta, now, tz)
 
