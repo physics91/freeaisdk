@@ -37,6 +37,13 @@ def test_cloudflare_needs_account_and_classifies_neuron_exhaustion(monkeypatch):
     failure = cf.classify(429, {}, daily)
     assert (failure.kind, failure.scope) == (FailureKind.QUOTA_EXHAUSTED, Scope.PROVIDER)
     assert failure.retry_after == pytest.approx(seconds_until("day", time.time(), "UTC"), abs=5)
+    # JSON may decode the code as float; must still hit business_codes (provider scope).
+    daily_float = {"success": False, "errors": [{"code": 3036.0, "message": "daily free allocation"}]}
+    float_failure = cf.classify(429, {}, daily_float)
+    assert (float_failure.kind, float_failure.scope) == (FailureKind.QUOTA_EXHAUSTED, Scope.PROVIDER)
+    daily_str = {"success": False, "errors": [{"code": "3036.0", "message": "daily free allocation"}]}
+    str_failure = cf.classify(429, {}, daily_str)
+    assert (str_failure.kind, str_failure.scope) == (FailureKind.QUOTA_EXHAUSTED, Scope.PROVIDER)
 
     busy = cf.classify(429, {}, {"errors": [{"code": 3040, "message": "Out of capacity"}], "success": False})
     assert (busy.kind, busy.scope) == (FailureKind.UNAVAILABLE, Scope.MODEL)

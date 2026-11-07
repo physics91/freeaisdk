@@ -1,5 +1,6 @@
 """P2 surfaces: aliases, the OpenAI-shaped facade, the local proxy (real socket), CLI, OTel mapping."""
 
+import asyncio
 import json
 import socket
 import threading
@@ -7,13 +8,14 @@ import threading
 import httpx
 import pytest
 
-from freeai import FailureKind, FreeAI, Provider
+from freeai import FailureKind, FreeAI, OpenRouter, Provider
 from freeai import server as server_module
 from freeai.__main__ import main
-from freeai.compat import OpenAI, parse_model
+from freeai.aio import AsyncFreeAI
+from freeai.compat import AsyncOpenAI, OpenAI, parse_model
 from freeai.otel import attempt_attributes
 from freeai.server import MAX_BODY_BYTES, ProxyServer
-from freeai.types import Attempt
+from freeai.types import Attempt, ChatResponse
 
 from .conftest import FakeServer, delta, error, sse
 
@@ -58,6 +60,21 @@ def test_openai_facade(make_ai, server):
     assert "".join(c["choices"][0]["delta"]["content"] for c in chunks) == "ok"
     assert {c["object"] for c in chunks} == {"chat.completion.chunk"}
     assert client.models.list()["data"][0]["id"] == f"openrouter:{ALPHA}"
+
+
+def test_async_openai_models_list(server, clock):
+    provider = OpenRouter(api_key="sk-test", http_client=server.client(), async_http_client=server.aclient())
+
+    async def main() -> dict:
+        client = AsyncOpenAI(AsyncFreeAI([provider], clock=clock, max_wait=0))
+        try:
+            return await client.models.list()
+        finally:
+            await client.close()
+
+    listed = asyncio.run(main())
+    assert listed["object"] == "list"
+    assert {row["id"] for row in listed["data"]} >= {f"openrouter:{ALPHA}", f"openrouter:{BETA}"}
 
 
 # -- proxy over a real socket ------------------------------------------------------------------
@@ -122,6 +139,13 @@ def test_proxy_request_validation(proxy, monkeypatch):
         ).status_code
         == 400
     )
+    # Raw JSON so stream stays a string; httpx would coerce Python bools.
+    fake_stream = httpx.post(
+        f"{url}/chat/completions",
+        content=b'{"messages":[{"role":"user","content":"x"}],"stream":"false"}',
+        headers={"content-type": "application/json"},
+    )
+    assert fake_stream.status_code == 400 and fake_stream.json()["error"]["code"] == "invalid_stream"
     bad = httpx.post(
         f"{url}/chat/completions", json={"messages": [{"role": "user", "content": "x"}], "models": ["paid"]}
     )
@@ -218,6 +242,39 @@ def test_cli_errors_without_network(monkeypatch, capsys):
     assert "groq:openai/gpt-oss-120b" in capsys.readouterr().out
 
 
+def test_cli_max_tokens_zero_is_forwarded(monkeypatch, capsys):
+    seen: dict = {}
+
+    class _FakeAI:
+        @classmethod
+        def from_env(cls, **kwargs):
+            return cls()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def chat(self, prompt, **params):
+            seen.update(params)
+            return ChatResponse(
+                text="ok",
+                provider="p",
+                model="m",
+                requested_model="m",
+                message={"role": "assistant", "content": "ok"},
+                finish_reason="stop",
+                usage=None,
+                raw={},
+            )
+
+    monkeypatch.setattr("freeai.__main__.FreeAI", _FakeAI)
+    assert main(["chat", "hi", "--max-tokens", "0"]) == 0
+    assert seen.get("max_tokens") == 0
+    assert "ok" in capsys.readouterr().out
+
+
 def test_attempt_attributes_follow_genai_conventions():
     ok = Attempt("groq", "m", True, 0.5, served_model="m-2026", usage={"prompt_tokens": 3, "completion_tokens": 2})
     attributes = attempt_attributes(ok)
@@ -225,6 +282,17 @@ def test_attempt_attributes_follow_genai_conventions():
     assert attributes["gen_ai.provider.name"] == "groq"
     assert attributes["gen_ai.response.model"] == "m-2026"
     assert (attributes["gen_ai.usage.input_tokens"], attributes["gen_ai.usage.output_tokens"]) == (3, 2)
+    floated = attempt_attributes(
+        Attempt("groq", "m", True, 0.1, usage={"prompt_tokens": 3.0, "completion_tokens": 2.0})
+    )
+    assert (floated["gen_ai.usage.input_tokens"], floated["gen_ai.usage.output_tokens"]) == (3, 2)
+    as_str = attempt_attributes(
+        Attempt("groq", "m", True, 0.1, usage={"prompt_tokens": "3", "completion_tokens": "2.0"})
+    )
+    assert (as_str["gen_ai.usage.input_tokens"], as_str["gen_ai.usage.output_tokens"]) == (3, 2)
+    assert "gen_ai.usage.input_tokens" not in attempt_attributes(
+        Attempt("groq", "m", True, 0.1, usage={"prompt_tokens": True})
+    )
     failed = attempt_attributes(Attempt("p", "m", False, 0.1, kind=FailureKind.RATE_LIMIT, status=429, cooldown=7))
     assert failed["error.type"] == "rate_limit" and failed["http.response.status_code"] == 429
 

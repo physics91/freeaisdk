@@ -296,11 +296,71 @@ def test_discovery_prefers_models_user_when_keyed(make_ai, server):
     assert server.paths[0] == "/api/v1/models/user"
 
 
+def test_discovery_falls_back_to_next_catalog_path(server):
+    class FallingServer(FakeServer):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path.endswith("/models/user"):
+                self.paths.append(path)
+                return httpx.Response(503, json={"error": {"message": "busy"}})
+            return super().__call__(request)
+
+    falling = FallingServer(server.catalog)
+    models = OpenRouter(api_key="sk-test", http_client=falling.client()).list_models()
+    assert falling.paths == ["/api/v1/models/user", "/api/v1/models"]
+    assert models
+
+
 def test_openrouter_requires_parameters_for_tools(make_ai, server):
     tools = [{"type": "function", "function": {"name": "w", "parameters": {}}}]
     make_ai().chat("weather?", tools=tools, n=3)
     assert server.calls[0]["provider"] == {"require_parameters": True}
     assert "n" not in server.calls[0]
+
+
+def test_empty_capability_params_do_not_narrow():
+    from freeai._prepare import ALIASES, PreparePolicy
+    from freeai.providers.openrouter import OpenRouter
+
+    prepare = PreparePolicy(aliases=ALIASES, allow_training=True, by_name={})
+    for empty in ({"tools": []}, {"tool_choice": ""}, {"response_format": {}}):
+        request = prepare.prepare("hi", None, None, (), None, dict(empty))
+        assert request.requirements.parameters == frozenset()
+        body = OpenRouter(api_key="k").prepare_payload("m", {"messages": [], **empty})
+        assert "provider" not in body
+    request = prepare.prepare(
+        "hi", None, None, (), None, {"tools": [{"type": "function", "function": {"name": "w", "parameters": {}}}]}
+    )
+    assert "tools" in request.requirements.parameters
+
+
+def test_openrouter_provider_field_ignores_non_dict():
+    from freeai.providers.openrouter import OpenRouter
+
+    router = OpenRouter(api_key="k")
+    body = router.prepare_payload(
+        "m",
+        {"messages": [], "tools": [{"type": "function", "function": {"name": "w", "parameters": {}}}], "provider": "x"},
+    )
+    assert body["provider"] == {"require_parameters": True}
+    denied = router.deny_training({"messages": [], "provider": "x"})
+    assert denied["provider"] == {"data_collection": "deny"}
+    merged = router.deny_training({"messages": [], "provider": {"order": ["a"]}})
+    assert merged["provider"] == {"order": ["a"], "data_collection": "deny"}
+
+
+def test_openrouter_free_model_tolerates_bad_architecture():
+    from freeai.providers.openrouter import OpenRouter
+
+    router = OpenRouter(api_key="k")
+    priced = {"prompt": "0", "completion": "0"}
+    assert router._free_model({"id": "x:free", "pricing": priced, "architecture": "bad"}, "2099-01-01") is not None
+    assert (
+        router._free_model(
+            {"id": "x:free", "pricing": priced, "architecture": {"output_modalities": ["audio"]}}, "2099-01-01"
+        )
+        is None
+    )
 
 
 def test_from_env_enables_only_free_tiers(monkeypatch):

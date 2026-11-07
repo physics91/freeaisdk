@@ -6,9 +6,15 @@ import random
 import httpx
 import pytest
 
-from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, RetryBudget
+from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, ProviderFailure, RetryBudget
 from freeai._core import Wait
-from freeai.providers import _EventReader
+from freeai._messages import _estimate_tokens, content_text, to_chunk, to_response
+from freeai._plan import Plan
+from freeai._routing_types import _total_tokens
+from freeai._sse import EventReader
+from freeai.health import HealthStats
+from freeai.providers._catalog import _catalog_model
+from freeai.types import Requirements
 
 from .conftest import FakeClock, FakeServer, error, ok, sse
 
@@ -146,14 +152,15 @@ def test_deadline_bounds_waiting_and_http_timeout(clock):
 
 def test_first_token_timeout_counts_only_data_events():
     fake = FakeClock()
-    reader = _EventReader(Provider("p", "https://p.example"), httpx.Headers(), 5.0, clock=fake)
+    provider = Provider("p", "https://p.example")
+    reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake)
     assert reader.feed(": OPENROUTER PROCESSING") == []
     fake.now += 6
     with pytest.raises(Exception, match="no streamed output within 5s"):
         reader.feed(": OPENROUTER PROCESSING")
 
     fake2 = FakeClock()
-    reader = _EventReader(Provider("p", "https://p.example"), httpx.Headers(), 5.0, clock=fake2)
+    reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake2)
     reader.feed('data: {"choices": []}')
     assert reader.feed("") == [{"choices": []}]
     fake2.now += 60
@@ -170,3 +177,172 @@ def test_stream_early_exit_releases_the_slot(clock):
         break
     gc.collect()
     assert ai.chat("hi").text == "hello"  # the abandoned stream did not keep the only slot
+
+
+@pytest.mark.parametrize(
+    "body", [{}, {"choices": []}, {"choices": [None]}, {"choices": ["x"]}, {"choices": "bad"}, {"choices": 1}]
+)
+def test_to_response_missing_choices_is_unavailable(body):
+    model = ModelInfo(provider="p", id="m")
+    with pytest.raises(ProviderFailure) as info:
+        to_response(model, body, retry_on_empty=True)
+    assert info.value.kind is FailureKind.UNAVAILABLE
+
+
+def test_tool_calls_require_list_of_dicts():
+    model = ModelInfo(provider="p", id="m")
+    chunk = to_chunk(model, {"choices": [{"delta": {"tool_calls": {"id": "x", "type": "function"}}}]})
+    assert chunk.tool_calls == ()
+    chunk = to_chunk(
+        model,
+        {"choices": [{"delta": {"tool_calls": [{"id": "c1", "type": "function"}, "skip", 1]}}]},
+    )
+    assert chunk.tool_calls == ({"id": "c1", "type": "function"},)
+    with pytest.raises(ProviderFailure) as info:
+        to_response(
+            model,
+            {"choices": [{"message": {"content": "", "tool_calls": {"id": "x"}}, "finish_reason": "stop"}]},
+            retry_on_empty=True,
+        )
+    assert info.value.kind is FailureKind.EMPTY
+
+
+def test_non_dict_message_or_delta_is_empty():
+    model = ModelInfo(provider="p", id="m")
+    with pytest.raises(ProviderFailure) as info:
+        to_response(model, {"choices": [{"message": "hello", "finish_reason": "stop"}]}, retry_on_empty=True)
+    assert info.value.kind is FailureKind.EMPTY
+    chunk = to_chunk(model, {"choices": [{"delta": "x", "finish_reason": "stop"}]})
+    assert chunk.text == "" and chunk.tool_calls == ()
+
+
+def test_json_as_stream_string_message_becomes_content():
+    from freeai._http import Headers
+
+    provider = Provider("p", "https://example/v1", api_key="k", models=["m"])
+    events = list(
+        provider._json_as_stream(Headers(), {"model": "m", "choices": [{"message": "hello", "finish_reason": "stop"}]})
+    )
+    assert events[0]["choices"][0]["delta"] == {"content": "hello"}
+    assert to_chunk(ModelInfo(provider="p", id="m"), events[0]).text == "hello"
+
+
+def test_completion_requires_list_choices():
+    from freeai._http import Headers
+
+    provider = Provider("p", "https://example/v1", api_key="k", models=["m"])
+    for body in ({"choices": "bad"}, {"choices": 1}, {"choices": []}):
+        with pytest.raises(ProviderFailure):
+            provider._completion(200, Headers(), body)
+        with pytest.raises(ProviderFailure):
+            list(provider._json_as_stream(Headers(), body))
+
+
+def test_content_text_ignores_null_and_non_str_parts():
+    assert content_text([{"type": "text", "text": None}, {"type": "text", "text": "hi"}]) == "hi"
+    assert content_text([{"type": "text", "text": 1}]) == ""
+    assert content_text("plain") == "plain"
+
+
+def test_normalize_messages_rejects_non_mapping_items():
+    from freeai._messages import _normalize_messages
+
+    with pytest.raises(TypeError, match="messages\\[1\\] must be a mapping"):
+        _normalize_messages([{"role": "user", "content": "ok"}, "x"], None)
+    with pytest.raises(TypeError, match="system must be a string"):
+        _normalize_messages("hi", 123)  # type: ignore[arg-type]
+    assert _normalize_messages("hi", "sys") == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_estimate_tokens_skips_null_text_parts():
+    payload = {"messages": [{"role": "user", "content": [{"type": "text", "text": None}]}]}
+    # Default output reserve only; null text must not become len("None").
+    assert _estimate_tokens(payload) == float(512)
+
+
+def test_estimate_tokens_honors_zero_max_tokens():
+    base = {"messages": [{"role": "user", "content": "hi"}]}
+    assert _estimate_tokens({**base, "max_tokens": 0}) == 0.0
+    assert _estimate_tokens({**base, "max_completion_tokens": 0}) == 0.0
+    assert _estimate_tokens({**base, "max_tokens": "100"}) == 100.0
+    assert _estimate_tokens({**base, "max_tokens": True}) == float(512)
+    assert _estimate_tokens(base) == float(512)
+
+
+def test_prepare_coerces_string_token_limits():
+    from freeai._prepare import ALIASES, PreparePolicy
+
+    prepare = PreparePolicy(aliases=ALIASES, allow_training=True, by_name={})
+    request = prepare.prepare("hi", None, None, (), None, {"max_tokens": "50"})
+    assert request.payload["max_tokens"] == 50
+    assert request.cost.tokens == _estimate_tokens(request.payload)
+    both = prepare.prepare("hi", None, None, (), None, {"max_tokens": "1", "max_completion_tokens": "2.0"})
+    assert both.payload["max_tokens"] == 1
+    assert both.payload["max_completion_tokens"] == 2
+    sampled = prepare.prepare(
+        "hi", None, None, (), None, {"temperature": "0.2", "top_p": "0.9", "top_k": "40", "seed": "7"}
+    )
+    assert sampled.payload["temperature"] == 0.2
+    assert sampled.payload["top_p"] == 0.9
+    assert sampled.payload["top_k"] == 40
+    assert sampled.payload["seed"] == 7
+
+
+def test_catalog_empty_supported_parameters_means_unknown():
+    model = _catalog_model("p", {"id": "x", "supported_parameters": []})
+    assert model.supported_parameters is None
+    assert model.satisfies(Requirements(parameters=frozenset({"tools"})))
+
+
+def test_catalog_context_length_accepts_float_rejects_bool():
+    assert _catalog_model("p", {"id": "x", "context_length": 128000.0}).context_length == 128000
+    assert _catalog_model("p", {"id": "x", "context_window": 8192.0}).context_length == 8192
+    assert _catalog_model("p", {"id": "x", "context_length": "64000"}).context_length == 64000
+    assert _catalog_model("p", {"id": "x", "context_length": "8192.0"}).context_length == 8192
+    assert _catalog_model("p", {"id": "x", "context_length": "1.5"}).context_length is None
+    assert _catalog_model("p", {"id": "x", "context_length": True}).context_length is None
+
+
+def test_openrouter_quota_accepts_float_rejects_bool():
+    from freeai import OpenRouter
+
+    provider = OpenRouter(api_key="k")
+    snaps = provider._parse_quota({"data": {"free_model_daily_requests": {"used": 5.0, "limit": 50.0}}})
+    assert len(snaps) == 1 and snaps[0].remaining == 45
+    assert provider._parse_quota({"data": {"free_model_daily_requests": {"used": True, "limit": 50}}}) == []
+
+
+def test_needed_context_treats_zero_length_as_known():
+    class _Req:
+        cost = type("C", (), {"tokens": 99.0})()
+
+    class _Holder:
+        request = _Req()
+
+    assert Plan._needed_context(_Holder(), ModelInfo(provider="p", id="m", context_length=0)) == 1
+    assert Plan._needed_context(_Holder(), ModelInfo(provider="p", id="m")) == 99
+
+
+def test_total_tokens_sums_partial_usage_fields():
+    assert _total_tokens({"total_tokens": 15}) == 15.0
+    assert _total_tokens({"prompt_tokens": 10, "completion_tokens": 5}) == 15.0
+    assert _total_tokens({"prompt_tokens": 10}) == 10.0
+    assert _total_tokens({"completion_tokens": 0}) == 0.0
+    assert _total_tokens({"total_tokens": "15.0"}) == 15.0
+    assert _total_tokens({"prompt_tokens": "10", "completion_tokens": "5"}) == 15.0
+    assert _total_tokens({"total_tokens": True}) is None
+    assert _total_tokens({}) is None
+    assert _total_tokens(None) is None
+
+
+def test_health_latency_seeds_from_first_success_after_failures():
+    health = HealthStats(alpha=0.3)
+    health.record("m", False, 0.5)
+    health.record("m", True, 0.2)
+    snap = health.snapshot()["m"]
+    assert snap["latency"] == pytest.approx(0.2)
+    assert snap["success"] == pytest.approx(0.3)
+    assert health.score("m") == pytest.approx(0.3 / 1.2)

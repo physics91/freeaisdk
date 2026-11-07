@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from typing import Any, Self, Unpack
 
@@ -18,14 +20,13 @@ from ._core import (
     Router,
     RouterOptions,
     Wait,
-    build_from_env,
     empty_stream,
     to_chunk,
 )
 from ._http import logger
 from .errors import FailureKind, FreeAIError, OutputLimitError, ProviderFailure, StreamInterrupted
 from .limits import Cost
-from .providers import Provider, Tier
+from .providers import OpenRouter, Provider, Tier, build_from_env
 from .types import ChatResponse, ModelInfo, Requirements, StreamChunk
 
 __all__ = ["DEFAULT_EXCLUDE", "FreeAI", "chat", "stream"]
@@ -126,6 +127,8 @@ class _ClientBase:
     def __init__(
         self, providers: Provider | Sequence[Provider] | None = None, **options: Unpack[RouterOptions]
     ) -> None:
+        if providers is None:
+            providers = [OpenRouter()]
         self._router = Router(providers, **options)
 
     @classmethod
@@ -162,14 +165,25 @@ class _ClientBase:
         return self._router.prepare(messages, system, model, require, min_context, params)
 
     @staticmethod
-    def _pools_from(results: Iterable[tuple[Provider, list[ModelInfo] | FreeAIError]]) -> dict[str, list[ModelInfo]]:
-        pools: dict[str, list[ModelInfo]] = {}
+    def _pools_from(
+        results: Iterable[tuple[Provider, Sequence[ModelInfo] | FreeAIError]],
+    ) -> dict[str, Sequence[ModelInfo]]:
+        pools: dict[str, Sequence[ModelInfo]] = {}
         for provider, result in results:
             if isinstance(result, FreeAIError):
                 logger.warning("skipping provider %s: %s", provider.name, result)
             else:
                 pools[provider.name] = result
         return pools
+
+    def _plan_after_pools(
+        self, request: Request, pools: dict[str, Sequence[ModelInfo]], max_attempts: int | None, deadline: float | None
+    ) -> tuple[Plan, Sequence[Provider]]:
+        """Order candidates and build a plan; return warmups still needed for ``plan.providers``."""
+        router = self._router
+        ordered = router.order(request, pools, turn=router.next_turn())
+        plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
+        return plan, router.claim_warmups(plan.providers)
 
 
 class FreeAI(_ClientBase):
@@ -322,22 +336,53 @@ class FreeAI(_ClientBase):
 
     # -- internals -------------------------------------------------------------------------
 
-    def _pools(self) -> dict[str, list[ModelInfo]]:
-        results: list[tuple[Provider, list[ModelInfo] | FreeAIError]] = []
-        for provider in self.providers:
-            try:
-                results.append((provider, provider.list_models()))
-            except FreeAIError as exc:
-                results.append((provider, exc))
-        return self._pools_from(results)
+    def _pools(self) -> dict[str, Sequence[ModelInfo]]:
+        providers = self.providers
+        # Warm catalogs stay sequential (no thread hop). Cold multi-provider fetches match async gather.
+        if len(providers) <= 1 or not any(provider.catalog_may_fetch() for provider in providers):
+            return self._pools_from((provider, self._snapshot(provider)) for provider in providers)
+        workers = min(len(providers), 32, (os.cpu_count() or 1) + 4)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(self._snapshot, providers))
+        return self._pools_from(zip(providers, results, strict=True))
+
+    @staticmethod
+    def _snapshot(provider: Provider) -> Sequence[ModelInfo] | FreeAIError:
+        try:
+            return provider.models_snapshot()
+        except FreeAIError as exc:
+            return exc
 
     def _plan(self, request: Request, max_attempts: int | None, deadline: float | None) -> Plan:
         router = self._router
-        ordered = router.order(request, self._pools(), turn=router.next_turn())
-        plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
-        for provider in router.claim_warmups(plan.providers):
-            router.observe(provider.name, "*", provider.refresh_quota())
+        # Overlap account-quota HTTP with catalog discovery on the first plan.
+        early = router.claim_warmups(p.name for p in self.providers if p.quota_may_fetch())
+        if early:
+            workers = min(1 + len(early), 32, (os.cpu_count() or 1) + 4)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                pools_future = pool.submit(self._pools)
+                snapshots = list(pool.map(lambda provider: provider.refresh_quota(), early))
+                pools = pools_future.result()
+            router.observe_many((provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True))
+        else:
+            pools = self._pools()
+        plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline)
+        self._observe_warmups(warmups)
         return plan
+
+    def _observe_warmups(self, warmups: Sequence[Provider]) -> None:
+        """Fetch each provider's quota once; parallelize only when several may hit the network."""
+        if not warmups:
+            return
+        if len(warmups) <= 1 or not any(provider.quota_may_fetch() for provider in warmups):
+            snapshots = [provider.refresh_quota() for provider in warmups]
+        else:
+            workers = min(len(warmups), 32, (os.cpu_count() or 1) + 4)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                snapshots = list(pool.map(lambda provider: provider.refresh_quota(), warmups))
+        self._router.observe_many(
+            (provider.name, "*", snaps) for provider, snaps in zip(warmups, snapshots, strict=True)
+        )
 
     def _stream(
         self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None
@@ -369,7 +414,8 @@ class FreeAI(_ClientBase):
                 with closing(events):
                     for event in events:
                         chunk = to_chunk(target, event)
-                        usage = chunk.usage or usage
+                        if chunk.usage is not None:
+                            usage = chunk.usage
                         if not delivered and not chunk.has_output:
                             continue  # role-only preambles: nothing committed to this model yet
                         delivered = True
@@ -377,7 +423,7 @@ class FreeAI(_ClientBase):
                         emitted.append(chunk.text)
                         yield chunk
             except ProviderFailure as failure:
-                if plan.failed(target, failure, started):
+                if plan.failed(target, failure, started, usage=usage):
                     router.observe(provider.name, "*", provider.refresh_quota())
                 if delivered:
                     raise StreamInterrupted(failure, "".join(emitted), plan.attempts) from failure

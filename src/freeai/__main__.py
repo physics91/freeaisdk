@@ -43,49 +43,58 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(message)s")
     options: dict[str, Any] = {"allow_training": not args.no_training}
+    store: SQLiteStore | None = None
     if args.store:
-        options["store"] = SQLiteStore(args.store)
+        store = SQLiteStore(args.store)
+        options["store"] = store
     try:
-        ai = FreeAI.from_env(tiers=tuple(args.tiers.split(",")), include_keyless=args.keyless, **options)
-    except FreeAIError as exc:
-        print(f"freeai: {exc}", file=sys.stderr)
-        return 2
-
-    if args.command == "serve":
-        from .server import serve as run_server
-
         try:
-            run_server(ai, host=args.host, port=args.port, token=args.token)
-        except ValueError as exc:
-            print(f"freeai: {exc}", file=sys.stderr)
-            return 2
-        return 0
-
-    with ai:
-        try:
-            if args.command == "models":
-                found = ai.models(require=args.require)
-                if args.json:
-                    print(json.dumps([{"key": m.key, "context": m.context_length} for m in found], indent=2))
-                else:
-                    for m in found:
-                        print(m.key)
-                return 0
-            params: dict[str, Any] = {}
-            if args.max_tokens:
-                params["max_tokens"] = args.max_tokens
-            if args.stream:
-                for chunk in ai.stream(args.prompt, system=args.system, model=args.model, **params):
-                    print(chunk.text, end="", flush=True)
-                print()
-            else:
-                response = ai.chat(args.prompt, system=args.system, model=args.model, **params)
-                print(response.text)
-                print(f"[{response.provider}:{response.model}, {len(response.attempts)} attempt(s)]", file=sys.stderr)
+            ai = FreeAI.from_env(tiers=tuple(args.tiers.split(",")), include_keyless=args.keyless, **options)
         except FreeAIError as exc:
             print(f"freeai: {exc}", file=sys.stderr)
-            return 1
-    return 0
+            return 2
+
+        if args.command == "serve":
+            from .server import serve as run_server
+
+            try:
+                run_server(ai, host=args.host, port=args.port, token=args.token)
+            except ValueError as exc:
+                print(f"freeai: {exc}", file=sys.stderr)
+                return 2
+            return 0
+
+        with ai:
+            try:
+                if args.command == "models":
+                    found = ai.models(require=args.require)
+                    if args.json:
+                        print(json.dumps([{"key": m.key, "context": m.context_length} for m in found], indent=2))
+                    else:
+                        for m in found:
+                            print(m.key)
+                    return 0
+                params: dict[str, Any] = {}
+                if args.max_tokens is not None:
+                    params["max_tokens"] = args.max_tokens
+                if args.stream:
+                    for chunk in ai.stream(args.prompt, system=args.system, model=args.model, **params):
+                        print(chunk.text, end="", flush=True)
+                    print()
+                else:
+                    response = ai.chat(args.prompt, system=args.system, model=args.model, **params)
+                    print(response.text)
+                    print(
+                        f"[{response.provider}:{response.model}, {len(response.attempts)} attempt(s)]",
+                        file=sys.stderr,
+                    )
+            except FreeAIError as exc:
+                print(f"freeai: {exc}", file=sys.stderr)
+                return 1
+        return 0
+    finally:
+        if store is not None:
+            store.close()
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ class ProxyServer(ThreadingHTTPServer):
             raise ValueError(f"refusing to listen on {address[0]} without a token: anyone could spend your quota")
         self.ai = ai
         self.token = token or None
+        self._token_bytes = None if self.token is None else self.token.encode()
         self._secrets = [p.api_key for p in ai.providers if p.api_key and len(p.api_key) >= 8]
         super().__init__(address, _Handler)
 
@@ -86,21 +87,26 @@ class _Handler(BaseHTTPRequestHandler):
         self._started = False
         if not self._authorized():
             return
-        if self._path() != "/v1/chat/completions":
+        path = self._path()
+        if path != "/v1/chat/completions":
             self.close_connection = True  # the body was not read
-            self._error(404, f"no route for POST {self._path()}", "invalid_request_error", "not_found")
+            self._error(404, f"no route for POST {path}", "invalid_request_error", "not_found")
             return
         body = self._read_json()
         if body is None:
             return
         messages = body.pop("messages", None)
         model = body.pop("model", None)
-        stream = bool(body.pop("stream", False))
+        stream = body.pop("stream", False)
         if not isinstance(messages, list) or not messages:
             self._error(400, "messages must be a non-empty list", "invalid_request_error", "invalid_messages")
             return
         if model is not None and not isinstance(model, str):
             self._error(400, "model must be a string", "invalid_request_error", "invalid_model")
+            return
+        if not isinstance(stream, bool):
+            # ``bool("false")`` is True; only JSON booleans are accepted.
+            self._error(400, "stream must be a boolean", "invalid_request_error", "invalid_stream")
             return
         try:
             if stream:
@@ -146,11 +152,11 @@ class _Handler(BaseHTTPRequestHandler):
         return self.path.split("?", 1)[0].rstrip("/") or "/"
 
     def _authorized(self) -> bool:
-        token = self.server.token
-        if token is None:
+        expected = self.server._token_bytes
+        if expected is None:
             return True
         scheme, _, given = self.headers.get("Authorization", "").partition(" ")
-        if scheme.lower() == "bearer" and hmac.compare_digest(given.strip().encode(), token.encode()):
+        if scheme.lower() == "bearer" and hmac.compare_digest(given.strip().encode(), expected):
             return True
         self.close_connection = True  # any request body stays unread
         self._error(
@@ -168,12 +174,13 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._error(411, "Content-Length required", "invalid_request_error", "length_required")
             return None
-        if int(length) > MAX_BODY_BYTES:
+        size = int(length)
+        if size > MAX_BODY_BYTES:
             self.close_connection = True
             self._error(413, "request body too large", "invalid_request_error", "body_too_large")
             return None
         try:
-            body = json.loads(self.rfile.read(int(length)) or b"{}")
+            body = json.loads(self.rfile.read(size) or b"{}")
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._error(400, "body is not valid JSON", "invalid_request_error", "invalid_json")
             return None
@@ -214,7 +221,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(status, {"error": error}, headers)
 
     def _json(self, status: int, body: Any, headers: Mapping[str, str] | None = None) -> None:
-        data = json.dumps(body, default=str).encode()
+        data = json.dumps(body, default=str, separators=(",", ":")).encode()
         self._start(status, {"Content-Type": "application/json", "Content-Length": str(len(data)), **(headers or {})})
         self.wfile.write(data)
 
@@ -229,7 +236,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._started = True
 
     def _event(self, payload: dict[str, Any]) -> None:
-        self.wfile.write(b"data: " + json.dumps(payload, default=str).encode() + b"\n\n")
+        self.wfile.write(b"data: " + json.dumps(payload, default=str, separators=(",", ":")).encode() + b"\n\n")
         self.wfile.flush()
 
 

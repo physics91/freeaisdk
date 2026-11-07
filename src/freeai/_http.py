@@ -1,6 +1,7 @@
-"""HTTP boundary and wire-format helpers: retry hints, error bodies, server-sent events.
+"""HTTP boundary and wire-format helpers: retry hints, error bodies, timezone helpers.
 
 Every other module imports the HTTP library through this one, so swapping it is a one-file change.
+Server-sent events live in :mod:`freeai._sse`.
 """
 
 from __future__ import annotations
@@ -8,10 +9,12 @@ from __future__ import annotations
 import email.utils
 import json
 import logging
+import math
 import re
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -54,7 +57,8 @@ def retry_hint(
     """
     wall = time.time() if now is None else now
     reset_headers = tuple(reset_headers)
-    for source in (Headers(headers), _embedded_headers(error)):
+    normalized = headers if isinstance(headers, Headers) else Headers(headers)
+    for source in (normalized, _embedded_headers(error)):
         delay = _header_delay(source, reset_headers, wall)
         if delay is not None:
             return delay
@@ -64,9 +68,11 @@ def retry_hint(
 def _header_delay(headers: Headers, reset_headers: tuple[str, ...], wall: float) -> float | None:
     if value := headers.get("retry-after-ms"):
         try:
-            return max(0.0, float(value) / 1000)
+            number = float(value) / 1000
         except ValueError:
-            pass
+            number = None
+        if number is not None and math.isfinite(number):
+            return max(0.0, number)
     if value := headers.get("retry-after"):
         delay = _parse_retry_after(value.strip(), wall)
         if delay is not None:
@@ -109,26 +115,34 @@ def _body_delay(error: Mapping[str, Any]) -> float | None:
 def _parse_proto_duration(value: Any) -> float | None:
     if isinstance(value, str) and value.endswith("s"):
         try:
-            return max(0.0, float(value[:-1]))
+            number = float(value[:-1])
         except ValueError:
             return None
+        return max(0.0, number) if math.isfinite(number) else None
     if isinstance(value, dict):
+        seconds, nanos = value.get("seconds", 0), value.get("nanos", 0)
+        if isinstance(seconds, bool) or isinstance(nanos, bool):
+            return None
         try:
-            return max(0.0, float(value.get("seconds", 0)) + float(value.get("nanos", 0)) / 1e9)
+            number = float(seconds) + float(nanos) / 1e9
         except (TypeError, ValueError):
             return None
+        return max(0.0, number) if math.isfinite(number) else None
     return None
 
 
 def _parse_retry_after(value: str, wall: float) -> float | None:
     try:
-        return max(0.0, float(value))
+        number = float(value)
     except ValueError:
-        pass
+        number = None
+    if number is not None and math.isfinite(number):
+        return max(0.0, number)
     try:
-        return max(0.0, email.utils.parsedate_to_datetime(value).timestamp() - wall)
+        delay = email.utils.parsedate_to_datetime(value).timestamp() - wall
     except (TypeError, ValueError):
         return None
+    return max(0.0, delay) if math.isfinite(delay) else None
 
 
 def parse_reset(value: str, wall: float) -> float | None:
@@ -137,6 +151,8 @@ def parse_reset(value: str, wall: float) -> float | None:
         number = float(value)
     except ValueError:
         return _parse_duration(value)
+    if not math.isfinite(number):
+        return None
     if number > 1e12:  # epoch milliseconds (OpenRouter)
         return max(0.0, number / 1000 - wall)
     if number > 1e9:  # epoch seconds
@@ -198,88 +214,6 @@ def decode(response: Response) -> Any:
         return response.text
 
 
-class SSEDecoder:
-    """Incremental server-sent events parser (WHATWG rules) yielding each event's JSON ``data``.
-
-    Feed it one line at a time (sync or async). Multi-line ``data`` fields are joined with newlines,
-    comments are skipped and ``[DONE]`` sets :attr:`done`. An ``event: error`` frame is surfaced as
-    ``{"error": ...}``. Call :meth:`flush` at end of input: several servers omit the final blank line.
-    """
-
-    def __init__(self) -> None:
-        self.done = False
-        self._data: list[str] = []
-        self._event = ""
-
-    def feed(self, raw: str) -> list[Any]:
-        if self.done:
-            return []
-        line = raw.rstrip("\r")
-        if line == "":
-            return self._dispatch()
-        if line.startswith(":"):
-            return []
-        name, _, value = line.partition(":")
-        value = value.removeprefix(" ")
-        if name == "data":
-            self._data.append(value)
-        elif name == "event":
-            self._event = value
-        return []
-
-    def flush(self) -> list[Any]:
-        return [] if self.done else self._dispatch()
-
-    def _dispatch(self) -> list[Any]:
-        data, event = self._data, self._event
-        self._data, self._event = [], ""
-        items: list[Any] = []
-        for item in _decode_event(data, event):
-            if item is _DONE:
-                self.done = True
-                break
-            items.append(item)
-        return items
-
-
-def iter_sse(lines: Iterable[str]) -> Iterator[Any]:
-    """Parse server-sent events from an iterable of lines (see :class:`SSEDecoder`)."""
-    decoder = SSEDecoder()
-    for line in lines:
-        yield from decoder.feed(line)
-        if decoder.done:
-            return
-    yield from decoder.flush()
-
-
-_DONE = object()
-
-
-def _decode_event(data: list[str], event: str) -> Iterator[Any]:
-    if not data:
-        return
-    payload = "\n".join(data)
-    if payload.strip() == "[DONE]":
-        yield _DONE
-        return
-    try:
-        parsed = json.loads(payload)
-    except json.JSONDecodeError:
-        # Tolerate servers that separate events with single newlines.
-        for line in data:
-            if line.strip() == "[DONE]":
-                yield _DONE
-                return
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
-                logger.debug("skipping undecodable SSE data: %.200s", line)
-        return
-    if event == "error" and isinstance(parsed, dict) and "error" not in parsed:
-        parsed = {"error": parsed}
-    yield parsed
-
-
 def seconds_until_midnight(zone: str, *, now: datetime | None = None) -> float:
     """Seconds until the next local midnight in ``zone`` (e.g. ``"America/Los_Angeles"``)."""
     tz = _zone(zone)
@@ -288,7 +222,9 @@ def seconds_until_midnight(zone: str, *, now: datetime | None = None) -> float:
     return (midnight - current).total_seconds()
 
 
+@lru_cache(maxsize=32)
 def _zone(zone: str) -> tzinfo:
+    """Resolve ``zone`` once; quota/period checks hit this on every reserve/observe."""
     if zone.upper() == "UTC":
         return UTC
     try:

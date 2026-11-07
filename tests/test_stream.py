@@ -1,6 +1,7 @@
 import pytest
 
 from freeai import FailureKind, StreamInterrupted
+from freeai._plan import Plan
 
 from .conftest import delta, error, sse
 
@@ -49,6 +50,26 @@ def test_error_after_output_raises_with_partial_text(make_ai, server):
     assert info.value.partial_text == "partial answer"
     assert "".join(received) == "partial answer"
     assert server.models_called == [ALPHA]
+
+
+def test_stream_failure_forwards_chunk_usage(make_ai, server, monkeypatch):
+    captured: dict = {}
+    original = Plan.failed
+
+    def wrap(self, model, failure, started, snapshots=(), *, usage=None):
+        captured["usage"] = usage
+        return original(self, model, failure, started, snapshots, usage=usage)
+
+    monkeypatch.setattr(Plan, "failed", wrap)
+    usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    failing = {
+        "error": {"code": 502, "message": "provider crashed"},
+        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}],
+    }
+    server.on(ALPHA, sse({**delta("partial"), "usage": usage}, failing))
+    with pytest.raises(StreamInterrupted):
+        list(make_ai().stream("hi"))
+    assert captured["usage"] == usage
 
 
 def test_empty_stream_fails_over(make_ai, server):

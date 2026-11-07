@@ -1,20 +1,39 @@
-"""Quota windows, cooldowns, health statistics and the retry budget.
+"""Quota windows and pending reservations shared through a store transaction (see ``state.py``).
 
-Window and cooldown state is read and written through a store transaction (see ``state.py``) so
-several processes can share it; health statistics and the retry budget stay in-process.
+Failure cooldowns live in :mod:`freeai.cooldown` (re-exported here for compatibility).
+Routing health scores live in :mod:`freeai.health`. The failover retry throttle lives in
+:mod:`freeai.retry` (re-exported here as :class:`RetryBudget` for compatibility).
 """
 
 from __future__ import annotations
 
 import fnmatch
 import math
-from collections.abc import Iterable, MutableMapping
-from dataclasses import dataclass, field
+import re
+from collections.abc import Iterable, MutableMapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Literal
 
 from ._http import _zone
-from .errors import FailureKind
+from .cooldown import CooldownPolicy as CooldownPolicy
+from .cooldown import (
+    cooldown_clear as cooldown_clear,
+)
+from .cooldown import (
+    cooldown_fail as cooldown_fail,
+)
+from .cooldown import (
+    cooldown_failures as cooldown_failures,
+)
+from .cooldown import (
+    cooldown_ready_at as cooldown_ready_at,
+)
+from .cooldown import (
+    cooldown_snapshot as cooldown_snapshot,
+)
+from .retry import RetryBudget as RetryBudget
 
 Window = Literal["minute", "hour", "day", "month"]
 Unit = Literal["requests", "tokens"]
@@ -31,99 +50,6 @@ _ROLLING_BY_DEFAULT = frozenset({"minute", "hour"})
 # left in the window when it started refilling is not affected, so bursts are unchanged.
 EDGE_MARGIN = 1.0
 _PENDING_PREFIX = "p:"  # reservations the platform has not accepted yet, keyed by quota key
-_MIN_HINT = 1.0  # never hammer a model again within a second, even on "Retry-After: 0"
-_NO_COOLDOWN = frozenset(
-    {
-        FailureKind.BAD_REQUEST,
-        FailureKind.CONTEXT_EXCEEDED,
-        FailureKind.REFUSED,
-        FailureKind.OUTPUT_LIMIT,
-        FailureKind.REJECTED,
-    }
-)
-
-
-# -- cooldowns ---------------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class CooldownPolicy:
-    """How long a model (or a whole provider) is benched after a failure, in seconds.
-
-    Server hints (Retry-After, reset headers, RetryInfo) win over the defaults for rate limits,
-    quota resets and 503s; without one, the default doubles on every consecutive failure up to
-    ``max_backoff``. Quota exhaustion without a hint waits for the provider's daily reset.
-    """
-
-    rate_limit: float = 30.0
-    provider_rate_limit: float = 60.0
-    quota_exhausted: float = 3600.0
-    unavailable: float = 15.0
-    empty: float = 5.0
-    model_gone: float = 3600.0
-    not_entitled: float = 86400.0
-    quota: float = 3600.0
-    max_backoff: float = 900.0
-    max_hint: float = 32 * 86400.0  # monthly allowances (Cohere) reset weeks away
-
-    def duration(self, kind: FailureKind, failures: int, hint: float | None) -> float:
-        if kind is FailureKind.AUTH:
-            return math.inf
-        if kind in _NO_COOLDOWN:
-            return 0.0
-        fixed = {
-            FailureKind.MODEL_GONE: self.model_gone,
-            FailureKind.NOT_ENTITLED: self.not_entitled,
-            FailureKind.QUOTA: self.quota,
-            FailureKind.EMPTY: self.empty,
-        }
-        if kind in fixed:
-            return fixed[kind]
-        if hint is not None:
-            return min(max(hint, _MIN_HINT), self.max_hint)
-        if kind is FailureKind.QUOTA_EXHAUSTED:
-            return self.quota_exhausted
-        base = {
-            FailureKind.RATE_LIMIT: self.rate_limit,
-            FailureKind.PROVIDER_RATE_LIMIT: self.provider_rate_limit,
-        }.get(kind, self.unavailable)
-        return min(base * 2.0 ** (failures - 1), self.max_backoff)
-
-
-def cooldown_ready_at(tx: State, key: str) -> float:
-    entry = tx.get(key)
-    return float(entry["until"]) if entry else 0.0
-
-
-def cooldown_failures(tx: State, key: str) -> int:
-    entry = tx.get(key)
-    return int(entry["failures"]) if entry else 0
-
-
-def cooldown_fail(
-    tx: State, key: str, kind: FailureKind, hint: float | None, now: float, policy: CooldownPolicy
-) -> float:
-    entry = tx.get(key) or {}
-    failures = int(entry.get("failures", 0)) + 1
-    cooldown = policy.duration(kind, failures, hint)
-    until = float(entry.get("until", 0.0))
-    if cooldown > 0:
-        until = max(until, now + cooldown)
-    tx[key] = {"until": until, "failures": failures}
-    return cooldown
-
-
-def cooldown_clear(tx: State, key: str) -> None:
-    if key in tx:
-        del tx[key]
-
-
-def cooldown_snapshot(tx: State, prefix: str, now: float) -> dict[str, float]:
-    return {
-        key[len(prefix) :]: float(tx[key]["until"]) - now
-        for key in list(tx)
-        if key.startswith(prefix) and float(tx[key]["until"]) > now
-    }
 
 
 # -- quota windows -----------------------------------------------------------------------------
@@ -148,7 +74,7 @@ class Limit:
     last_verified: str | None = None
 
     def applies_to(self, model_id: str) -> bool:
-        return self.models is None or any(fnmatch.fnmatchcase(model_id, p) for p in self.models)
+        return self.models is None or any(rx.match(model_id) is not None for rx in _compiled_globs(self.models))
 
     def key(self, provider: str, model_id: str) -> str:
         target = model_id if self.scope == "model" else "*"
@@ -181,6 +107,16 @@ def tpd(amount: float, **kwargs: Any) -> Limit:
 
 def per_month(amount: float, unit: Unit = "requests", **kwargs: Any) -> Limit:
     return Limit(amount, "month", unit, **kwargs)
+
+
+def _compiled_globs(patterns: Sequence[str]) -> tuple[re.Pattern[str], ...]:
+    """Compile shell-style globs once; ``fnmatchcase``-equivalent via ``translate`` + ``match``."""
+    return _compiled_globs_cached(tuple(patterns))
+
+
+@lru_cache(maxsize=256)
+def _compiled_globs_cached(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    return tuple(re.compile(fnmatch.translate(pattern)) for pattern in patterns)
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,19 +154,27 @@ def quota_ready_at(
     tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str
 ) -> float:
     ready = now
+    requests, tokens = cost.requests, cost.tokens
     for limit in limits:
-        amount = cost.of(limit.unit)
-        if amount > 0 and limit.applies_to(model_id):
+        amount = requests if limit.unit == "requests" else tokens
+        if amount > 0 and math.isfinite(amount) and limit.applies_to(model_id):
             ready = max(ready, _window_ready(limit, tx.get(limit.key(provider, model_id)), amount, now, tz))
     return ready
 
 
-def quota_charge(tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str) -> None:
+def quota_charge(
+    tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str
+) -> list[tuple[str, float]]:
+    """Charge windows for ``cost``; return ``(quota_key, amount)`` pairs actually charged."""
+    charges: list[tuple[str, float]] = []
+    requests, tokens = cost.requests, cost.tokens
     for limit in limits:
-        amount = cost.of(limit.unit)
-        if amount > 0 and limit.applies_to(model_id):
+        amount = requests if limit.unit == "requests" else tokens
+        if amount > 0 and math.isfinite(amount) and limit.applies_to(model_id):
             key = limit.key(provider, model_id)
             tx[key] = _window_add(limit, tx.get(key), amount, now, tz)
+            charges.append((key, amount))
+    return charges
 
 
 def quota_adjust(
@@ -238,7 +182,7 @@ def quota_adjust(
 ) -> None:
     """Settle an estimate (``delta`` > 0 charges more, < 0 refunds)."""
     for limit in limits:
-        if limit.unit == unit and delta and limit.applies_to(model_id):
+        if limit.unit == unit and delta and math.isfinite(delta) and limit.applies_to(model_id):
             key = limit.key(provider, model_id)
             tx[key] = _window_add(limit, tx.get(key), delta, now, tz)
 
@@ -255,20 +199,26 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
     never hand requests back, so a request count read lower than one already applied is a late
     reading and is ignored. Token counts can drop for real (unused output handed back), so for
     them only readings of a window that has already ended are ignored.
+
+    Non-positive or non-finite ``snapshot.limit`` values are ignored (store unchanged).
     """
     limit = Limit(snapshot.limit, snapshot.per, snapshot.unit, snapshot.scope, source="response headers")
+    if not math.isfinite(snapshot.limit) or snapshot.limit <= 0:
+        return limit
     key = limit.key(provider, model_id)
     seen = max(0.0, snapshot.limit - snapshot.remaining)
     requests = limit.unit == "requests"
-    old: Any = tx.get(key)  # what the last reading (and later charges) left
+    old = _quota_state(tx.get(key))  # what the last reading (and later charges) left
     rolling = limit.per in _ROLLING_BY_DEFAULT if snapshot.rolling is None else snapshot.rolling
     if limit.per in _ROLLING_BY_DEFAULT and snapshot.reset_in is None:
         rolling = True  # a fixed minute or hour window is no use without knowing when it ends
     if rolling and limit.per in _WINDOW_SECONDS:
         interval = _WINDOW_SECONDS[limit.per] / max(snapshot.limit, 1e-9)
         served = now + seen * interval  # when the platform's own count is whole again
-        if requests and old and "served" in old and float(old.get("amount", 0.0)) == snapshot.limit:
-            served = max(served, float(old["served"]))  # only ever moves forward for requests
+        old_amount = _quota_number(old.get("amount")) if old else None
+        old_served = _quota_number(old.get("served")) if old else None
+        if requests and old_amount == snapshot.limit and old_served is not None:
+            served = max(served, old_served)  # only ever moves forward for requests
         tat = served + _pending_total(tx, key, now) * interval
         state: dict[str, Any] = {"tat": tat, "amount": snapshot.limit, "since": now}
         if requests:
@@ -278,11 +228,16 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
         period = _period(limit.per, now, tz) if limit.per not in _ROLLING_BY_DEFAULT else None
         order = _reading_order(limit.per, old, until, period)
         if order < 0:  # the window this reading counted has already ended
-            seen, until = float(old["seen"]), float(old["until"])
-        elif order == 0 and requests:
-            seen = max(seen, float(old["seen"]))
+            seen = _quota_number(old.get("seen")) or 0.0
+            until = _quota_number(old.get("until"))
+        elif order == 0 and requests and old is not None:
+            old_seen = _quota_number(old.get("seen"))
+            if old_seen is not None:
+                seen = max(seen, old_seen)
             if until is not None:
-                until = max(until, float(old["until"]))
+                old_until = _quota_number(old.get("until"))
+                if old_until is not None:
+                    until = max(until, old_until)
         state = {"used": seen + _pending_total(tx, key, now), "seen": seen, "amount": snapshot.limit}
         if period is not None:
             state["period"] = period
@@ -292,26 +247,61 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
     return limit
 
 
-def _reading_order(per: Window, old: Any, until: float | None, period: str | None) -> int:
+def _quota_state(value: Any) -> dict[str, Any] | None:
+    """Quota counter row from the store; non-dict values are treated as missing."""
+    return value if isinstance(value, dict) else None
+
+
+def _finite_float(value: Any) -> float | None:
+    """Parse a finite float; bools, non-numeric values, and inf/nan are rejected."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        return number if math.isfinite(number) else None
+    return None
+
+
+def _quota_number(value: Any) -> float | None:
+    """Numeric quota field from the store."""
+    return _finite_float(value)
+
+
+def _reading_order(per: Window, old: dict[str, Any] | None, until: float | None, period: str | None) -> int:
     """Whether a fixed-window reading is of an earlier (-1), the same (0) or a later (1) window.
 
     ``old`` is the state the last reading left. Readings of one window report resets a rounding
     error apart, and a window's successor ends a whole window later. Unknown counts as later.
     """
-    if not old or "seen" not in old or old.get("period") != period:
+    if not old or _quota_number(old.get("seen")) is None or old.get("period") != period:
         return 1
-    old_until = old.get("until")
+    old_until = _quota_number(old.get("until")) if "until" in old else None
     if until is None or old_until is None:
         return 0 if until is None and old_until is None else 1
     half = _WINDOW_SECONDS.get(per, _WINDOW_SECONDS["day"]) / 2
-    delta = until - float(old_until)
+    delta = until - old_until
     return -1 if delta <= -half else 0 if delta < half else 1
+
+
+def _pending_entries(tx: State, key: str) -> dict[str, Any]:
+    """Reservation map for one quota key; replace a corrupt non-dict value with a fresh map."""
+    raw = tx.get(_PENDING_PREFIX + key)
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def pending_add(tx: State, reservation: str, charges: Iterable[tuple[str, float]], expires_at: float) -> None:
     """Record charges of a request the platform has not accepted yet (until ``expires_at``)."""
     for key, amount in charges:
-        entries = dict(tx.get(_PENDING_PREFIX + key) or {})
+        entries = _pending_entries(tx, key)
         entries[reservation] = [amount, expires_at]
         tx[_PENDING_PREFIX + key] = entries
 
@@ -319,7 +309,7 @@ def pending_add(tx: State, reservation: str, charges: Iterable[tuple[str, float]
 def pending_drop(tx: State, reservation: str, keys: Iterable[str]) -> None:
     """Forget a reservation: the platform accepted the request, or it is over."""
     for key in keys:
-        entries = dict(tx.get(_PENDING_PREFIX + key) or {})
+        entries = _pending_entries(tx, key)
         if entries.pop(reservation, None) is None:
             continue
         if entries:
@@ -328,28 +318,53 @@ def pending_drop(tx: State, reservation: str, keys: Iterable[str]) -> None:
             del tx[_PENDING_PREFIX + key]
 
 
+def _pending_row(entry: Any) -> list[float] | None:
+    """``[amount, expires_at]`` from the store; skip truncated or non-numeric rows."""
+    if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+        return None
+    try:
+        amount, expires = float(entry[0]), float(entry[1])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(amount) or not math.isfinite(expires):
+        return None
+    return [amount, expires]
+
+
 def _pending_total(tx: State, key: str, now: float) -> float:
-    entries = tx.get(_PENDING_PREFIX + key) or {}
-    live = {rid: entry for rid, entry in entries.items() if float(entry[1]) > now}
-    if len(live) != len(entries):  # a process died before handing these back
+    store_key = _PENDING_PREFIX + key
+    raw = tx.get(store_key)
+    entries = dict(raw) if isinstance(raw, dict) else {}
+    live: dict[str, list[float]] = {}
+    for rid, entry in entries.items():
+        row = _pending_row(entry)
+        if row is not None and row[1] > now:
+            live[rid] = row
+    # Drop expired/corrupt rows, and replace a corrupt non-dict value left in the store.
+    if not isinstance(raw, dict) or len(live) != len(entries):
         if live:
-            tx[_PENDING_PREFIX + key] = live
-        else:
-            del tx[_PENDING_PREFIX + key]
-    return sum(max(0.0, float(entry[0])) for entry in live.values())
+            tx[store_key] = live
+        elif store_key in tx:
+            del tx[store_key]
+    return sum(max(0.0, amount) for amount, _expires in live.values())
 
 
 def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) -> float:
-    capacity = float(state.get("amount", limit.amount)) if state else limit.amount
+    state = _usable_quota_state(state)
+    capacity_n = _quota_number(state.get("amount")) if state else None
+    capacity = limit.amount if capacity_n is None else capacity_n
+    if capacity <= 0:
+        return math.inf  # no allowance; never ready for a positive charge
     if _rolling(limit.per, state):
         period = _WINDOW_SECONDS[limit.per]
         interval = period / capacity
-        tat = float(state["tat"]) if state else now  # GCRA: when the window is whole again
+        tat = _quota_number(state.get("tat")) if state else now
         if tat <= now:
             return now
         # A single request larger than the window waits until it is whole again.
         due = tat if amount >= capacity else tat + amount * interval - period
-        if due <= float(state.get("since", -math.inf)):
+        since = _quota_number(state.get("since")) if state else None
+        if due <= (since if since is not None else -math.inf):
             return now  # covered by what was left when the window started refilling
         return max(now, due + EDGE_MARGIN)
     used = _used_in_period(limit, state, now, tz)
@@ -360,21 +375,35 @@ def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) 
 
 
 def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) -> dict[str, Any]:
-    capacity = float(state.get("amount", limit.amount)) if state else limit.amount
+    state = _usable_quota_state(state)
+    capacity_n = _quota_number(state.get("amount")) if state else None
+    capacity = limit.amount if capacity_n is None else capacity_n
+    if capacity <= 0:
+        if _rolling(limit.per, state):
+            return {"tat": math.inf, "amount": capacity, "since": now}
+        added_zero: dict[str, Any] = {"used": max(0.0, amount), "amount": capacity}
+        if limit.per not in _ROLLING_BY_DEFAULT:
+            added_zero["period"] = _period(limit.per, now, tz)
+        return added_zero
     if _rolling(limit.per, state):
         interval = _WINDOW_SECONDS[limit.per] / capacity
-        tat = float(state["tat"]) if state else now
+        tat = _quota_number(state.get("tat")) if state else now
         if tat <= now:  # whole: refilling starts with this charge
             return {"tat": max(now, now + amount * interval), "amount": capacity, "since": now}
-        since = float(state.get("since", now))
+        since = _quota_number(state.get("since"))
+        if since is None:
+            since = now
         added_tat: dict[str, Any] = {"tat": max(now, tat + amount * interval), "amount": capacity, "since": since}
-        if "served" in state:
-            added_tat["served"] = state["served"]  # the platform's count, if it reported one
+        served = _quota_number(state.get("served"))
+        if served is not None:
+            added_tat["served"] = served  # the platform's count, if it reported one
         return added_tat
     used = _used_in_period(limit, state, now, tz)
     added: dict[str, Any] = {"used": max(0.0, used + amount), "amount": capacity}
-    if state and "seen" in state and _in_window(limit, state, now, tz):
-        added["seen"] = state["seen"]  # the platform's count for this window, if it reported one
+    if state and _in_window(limit, state, now, tz):
+        seen = _quota_number(state.get("seen"))
+        if seen is not None:
+            added["seen"] = seen  # the platform's count for this window, if it reported one
     if limit.per not in _ROLLING_BY_DEFAULT:
         added["period"] = _period(limit.per, now, tz)
     until = _window_end(limit.per, state, now)
@@ -383,33 +412,46 @@ def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) ->
     return added
 
 
-def _rolling(per: Window, state: Any) -> bool:
+def _usable_quota_state(value: Any) -> dict[str, Any] | None:
+    """Drop non-dict rows and rolling rows whose ``tat`` is not numeric."""
+    state = _quota_state(value)
+    if state and "tat" in state and _quota_number(state.get("tat")) is None:
+        return None
+    return state
+
+
+def _rolling(per: Window, state: dict[str, Any] | None) -> bool:
     """Whether a window refills continuously (GCRA) or counts up to a reset; headers may decide."""
     return "tat" in state if state else per in _ROLLING_BY_DEFAULT
 
 
-def _used_in_period(limit: Limit, state: Any, now: float, tz: str) -> float:
-    return float(state.get("used", 0.0)) if state and _in_window(limit, state, now, tz) else 0.0
+def _used_in_period(limit: Limit, state: dict[str, Any] | None, now: float, tz: str) -> float:
+    if not state or not _in_window(limit, state, now, tz):
+        return 0.0
+    return _quota_number(state.get("used")) or 0.0
 
 
-def _in_window(limit: Limit, state: Any, now: float, tz: str) -> bool:
+def _in_window(limit: Limit, state: dict[str, Any], now: float, tz: str) -> bool:
     """Whether ``now`` is still in the fixed window ``state`` counts."""
-    if state.get("until") is not None:  # the server said when this window resets
-        return now < float(state["until"]) + EDGE_MARGIN
+    until = _quota_number(state.get("until")) if "until" in state else None
+    if until is not None:  # the server said when this window resets
+        return now < until + EDGE_MARGIN
+    if "until" in state:
+        return False  # corrupt until: do not trust this row
     return bool(state.get("period") == _period(limit.per, now, tz))
 
 
-def _window_end(per: Window, state: Any, now: float) -> float | None:
+def _window_end(per: Window, state: dict[str, Any] | None, now: float) -> float | None:
     """When the fixed window the server reported ends, while ``now`` is still in it.
 
     The server's reset is honored :data:`EDGE_MARGIN` late, like refilled quota, because it is
     rounded and our clock is not the platform's. Minute and hour windows repeat, so once one is
     over this is the end of the window ``now`` falls in.
     """
-    until = state.get("until") if state else None
+    until = _quota_number(state.get("until")) if state else None
     if until is None:
         return None
-    end = float(until)
+    end = until
     if now < end + EDGE_MARGIN:
         return end
     if per in _ROLLING_BY_DEFAULT:
@@ -437,67 +479,3 @@ def _next_boundary(per: Window, now: float, tz: str) -> float:
         year, month = (moment.year + 1, 1) if moment.month == 12 else (moment.year, moment.month + 1)
         start = datetime(year, month, 1, tzinfo=zone)
     return start.timestamp()
-
-
-# -- health and retry budget (in-process) ------------------------------------------------------
-
-
-@dataclass(slots=True)
-class _Ewma:
-    success: float = 1.0
-    latency: float = 1.0
-    samples: int = 0
-
-
-class HealthStats:
-    """Exponentially weighted success rate and latency per model, for ``strategy="health"``.
-
-    Unknown models start optimistic so that new free models get tried.
-    """
-
-    def __init__(self, alpha: float = 0.3) -> None:
-        self.alpha = alpha
-        self._stats: dict[str, _Ewma] = {}
-
-    def record(self, key: str, ok: bool, latency: float) -> None:
-        stat = self._stats.setdefault(key, _Ewma())
-        a = self.alpha if stat.samples else 1.0
-        stat.success = (1 - a) * stat.success + a * (1.0 if ok else 0.0)
-        if ok:
-            stat.latency = (1 - a) * stat.latency + a * max(latency, 0.0) if stat.samples else max(latency, 0.0)
-        stat.samples += 1
-
-    def score(self, key: str) -> float:
-        stat = self._stats.get(key)
-        if stat is None:
-            return 1.0
-        return stat.success / (1.0 + stat.latency)
-
-    def snapshot(self) -> dict[str, dict[str, float]]:
-        return {k: {"success": v.success, "latency": v.latency, "samples": v.samples} for k, v in self._stats.items()}
-
-
-@dataclass(slots=True)
-class RetryBudget:
-    """gRPC-style retry throttle: server failures spend a token, successes earn ``token_ratio``.
-
-    While fewer than half the tokens remain, a request stops failing over after a server failure,
-    so an upstream outage does not turn every call into a sweep over every free endpoint.
-    """
-
-    max_tokens: float = 10.0
-    token_ratio: float = 0.1
-    tokens: float = field(default=-1.0)
-
-    def __post_init__(self) -> None:
-        if self.tokens < 0:
-            self.tokens = self.max_tokens
-
-    def allows_retry(self) -> bool:
-        return self.tokens > self.max_tokens / 2
-
-    def on_failure(self) -> None:
-        self.tokens = max(0.0, self.tokens - 1.0)
-
-    def on_success(self) -> None:
-        self.tokens = min(self.max_tokens, self.tokens + self.token_ratio)

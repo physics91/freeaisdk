@@ -2,7 +2,9 @@ import httpx
 import pytest
 
 from freeai import CooldownPolicy, FailureKind, Gemini, Groq, OpenRouter, Provider, Scope
-from freeai._http import error_object, iter_sse, retry_hint, seconds_until_midnight
+from freeai._http import _zone, error_object, retry_hint, seconds_until_midnight
+from freeai._sse import iter_sse
+from freeai.providers._classify import _effective_status
 
 NOW = 1_700_000_000.0
 
@@ -240,3 +242,40 @@ def test_cooldown_policy():
     assert policy.duration(FailureKind.CONTEXT_EXCEEDED, 1, None) == 0
     assert policy.duration(FailureKind.OUTPUT_LIMIT, 1, None) == 0
     assert policy.duration(FailureKind.NOT_ENTITLED, 1, None) == 86400
+
+
+def test_cooldown_ignores_corrupt_entries():
+    from freeai.cooldown import cooldown_fail, cooldown_failures, cooldown_ready_at, cooldown_snapshot
+
+    tx = {"cd:p:x": "bad", "cd:p:y": {"until": 100.0, "failures": 2}}
+    assert cooldown_ready_at(tx, "cd:p:x") == 0.0
+    assert cooldown_failures(tx, "cd:p:x") == 0
+    assert cooldown_fail(tx, "cd:p:x", FailureKind.RATE_LIMIT, None, 1.0, CooldownPolicy()) == 30.0
+    assert tx["cd:p:x"] == {"until": 31.0, "failures": 1}
+    assert cooldown_snapshot(tx, "cd:p:", 0.0) == {"x": 31.0, "y": 100.0}
+    tx["cd:p:z"] = {"until": "nope", "failures": "x"}
+    assert cooldown_ready_at(tx, "cd:p:z") == 0.0
+    assert cooldown_failures(tx, "cd:p:z") == 0
+    assert "z" not in cooldown_snapshot(tx, "cd:p:", 0.0)
+
+
+def test_zone_is_cached():
+    assert _zone("America/Los_Angeles") is _zone("America/Los_Angeles")
+    assert _zone("UTC") is _zone("UTC")
+
+
+def test_effective_status_accepts_float_code():
+    assert _effective_status({"code": 429.0}, 200) == 429
+    assert _effective_status({"code": "503"}, 200) == 503
+    assert _effective_status({"code": "429.0"}, 200) == 429
+    assert _effective_status({"code": " 503 "}, 200) == 503
+    assert _effective_status({"code": "429.5"}, 200) == 502
+    assert _effective_status({"code": True}, 200) == 502
+    assert kind_scope(OpenRouter(api_key="k"), 200, {"error": {"code": 429.0, "message": "free-models-per-min"}}) == (
+        FailureKind.PROVIDER_RATE_LIMIT,
+        Scope.PROVIDER,
+    )
+    assert kind_scope(OpenRouter(api_key="k"), 200, {"error": {"code": "429.0", "message": "free-models-per-min"}}) == (
+        FailureKind.PROVIDER_RATE_LIMIT,
+        Scope.PROVIDER,
+    )

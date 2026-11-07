@@ -87,7 +87,10 @@ class ChatResponse:
 
     @property
     def tool_calls(self) -> list[dict[str, Any]]:
-        return self.message.get("tool_calls") or []
+        raw = self.message.get("tool_calls")
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict)]
 
     def __str__(self) -> str:
         return self.text

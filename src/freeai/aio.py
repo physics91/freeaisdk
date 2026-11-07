@@ -29,8 +29,14 @@ class _Wakeups:
         self._waiting: dict[frozenset[str], deque[asyncio.Future[None]]] = {}
         self._version = version
         self._poller: asyncio.Task[None] | None = None
+        self._changes = 0
+
+    def mark(self) -> tuple[int, int | None]:
+        """Taken before planning, so :meth:`wait` also catches changes made while the plan ran."""
+        return self._changes, _read_version(self._version)
 
     def wake(self) -> None:
+        self._changes += 1
         for group in list(self._waiting):
             queue = self._waiting[group]
             while queue:
@@ -41,13 +47,14 @@ class _Wakeups:
             if not queue:
                 del self._waiting[group]
 
-    async def wait(self, delay: float, group: frozenset[str]) -> None:
+    async def wait(self, delay: float, mark: tuple[int, int | None], group: frozenset[str]) -> None:
+        changes, version = mark
+        if self._changes != changes:
+            return
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._waiting.setdefault(group, deque()).append(future)
-        if self._poller is None or self._poller.done():
-            version = _read_version(self._version)
-            if version is not None:
-                self._poller = asyncio.create_task(self._poll(version))
+        if version is not None and (self._poller is None or self._poller.done()):
+            self._poller = asyncio.create_task(self._poll(version))
         try:
             await asyncio.wait_for(future, delay)
         except TimeoutError:
@@ -94,11 +101,14 @@ class AsyncFreeAI(_ClientBase):
         if self._wakeups is not None:
             self._router.on_change = self._wakeups.wake
 
-    async def _pause(self, step: Wait) -> None:
+    def _mark(self) -> tuple[int, int | None]:
+        return self._wakeups.mark() if self._wakeups is not None else (0, None)
+
+    async def _pause(self, step: Wait, mark: tuple[int, int | None]) -> None:
         if self._wakeups is None:
             await self._sleep(step.delay)
         else:
-            await self._wakeups.wait(step.delay, step.group)
+            await self._wakeups.wait(step.delay, mark, step.group)
 
     async def chat(
         self,
@@ -116,9 +126,10 @@ class AsyncFreeAI(_ClientBase):
         request = self._request(messages, system, model, require, min_context, params)
         plan = await self._plan(request, max_attempts, deadline)
         while True:
+            mark = self._mark()
             step = plan.next()
             if isinstance(step, Wait):
-                await self._pause(step)
+                await self._pause(step, mark)
                 continue
             target = step
             provider = router.provider(target)
@@ -190,10 +201,10 @@ class AsyncFreeAI(_ClientBase):
 
     # -- internals -------------------------------------------------------------------------
 
-    async def _pools(self) -> dict[str, list[ModelInfo]]:
-        async def fetch(provider: Provider) -> list[ModelInfo] | FreeAIError:
+    async def _pools(self) -> dict[str, Sequence[ModelInfo]]:
+        async def fetch(provider: Provider) -> Sequence[ModelInfo] | FreeAIError:
             try:
-                return await provider.alist_models()
+                return await provider.amodels_snapshot()
             except FreeAIError as exc:
                 return exc
 
@@ -202,11 +213,28 @@ class AsyncFreeAI(_ClientBase):
 
     async def _plan(self, request: Request, max_attempts: int | None, deadline: float | None) -> Plan:
         router = self._router
-        ordered = router.order(request, await self._pools(), turn=router.next_turn())
-        plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
-        for provider in router.claim_warmups(plan.providers):
-            router.observe(provider.name, "*", await provider.arefresh_quota())
+        # Overlap account-quota HTTP with catalog discovery on the first plan.
+        early = router.claim_warmups(p.name for p in self.providers if p.quota_may_fetch())
+        if early:
+            pools, *snapshots = await asyncio.gather(self._pools(), *(provider.arefresh_quota() for provider in early))
+            router.observe_many((provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True))
+        else:
+            pools = await self._pools()
+        plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline)
+        await self._observe_warmups(warmups)
         return plan
+
+    async def _observe_warmups(self, warmups: Sequence[Provider]) -> None:
+        """Fetch each provider's quota once; parallelize only when several may hit the network."""
+        if not warmups:
+            return
+        if len(warmups) <= 1 or not any(provider.quota_may_fetch() for provider in warmups):
+            snapshots = [await provider.arefresh_quota() for provider in warmups]
+        else:
+            snapshots = await asyncio.gather(*(provider.arefresh_quota() for provider in warmups))
+        self._router.observe_many(
+            (provider.name, "*", snaps) for provider, snaps in zip(warmups, snapshots, strict=True)
+        )
 
     async def _stream(
         self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None
@@ -215,9 +243,10 @@ class AsyncFreeAI(_ClientBase):
         plan = await self._plan(request, max_attempts, deadline)
         token_timeout = first_token_timeout if first_token_timeout is not None else router.first_token_timeout
         while True:
+            mark = self._mark()
             step = plan.next()
             if isinstance(step, Wait):
-                await self._pause(step)
+                await self._pause(step, mark)
                 continue
             target = step
             provider = router.provider(target)
@@ -237,7 +266,8 @@ class AsyncFreeAI(_ClientBase):
                 async with aclosing(events):
                     async for event in events:
                         chunk = to_chunk(target, event)
-                        usage = chunk.usage or usage
+                        if chunk.usage is not None:
+                            usage = chunk.usage
                         if not delivered and not chunk.has_output:
                             continue
                         delivered = True
@@ -245,7 +275,7 @@ class AsyncFreeAI(_ClientBase):
                         emitted.append(chunk.text)
                         yield chunk
             except ProviderFailure as failure:
-                if plan.failed(target, failure, started):
+                if plan.failed(target, failure, started, usage=usage):
                     router.observe(provider.name, "*", await provider.arefresh_quota())
                 if delivered:
                     raise StreamInterrupted(failure, "".join(emitted), plan.attempts) from failure

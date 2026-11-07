@@ -1,6 +1,8 @@
 """Quota windows, header snapshots and the shared state store."""
 
 import asyncio
+import fnmatch
+import json
 import math
 
 import httpx
@@ -15,6 +17,7 @@ from freeai import (
     Gemini,
     Groq,
     Limit,
+    ModelInfo,
     Provider,
     RateSnapshot,
     Scope,
@@ -23,8 +26,18 @@ from freeai import (
     rpm,
     tpm,
 )
-from freeai._core import Wait
-from freeai.limits import EDGE_MARGIN, Cost, pending_add, quota_charge, quota_observe, quota_ready_at, seconds_until
+from freeai._core import Wait, _learned_key, _rank
+from freeai.limits import (
+    EDGE_MARGIN,
+    Cost,
+    cooldown_snapshot,
+    pending_add,
+    quota_charge,
+    quota_observe,
+    quota_ready_at,
+    seconds_until,
+)
+from freeai.state import MemoryStore, _like_prefix
 
 from .conftest import FakeClock, FakeServer, delta, error, ok, sse
 
@@ -337,6 +350,7 @@ def test_groq_charges_its_chat_template_too(server, clock):
 
     assert cost(groq) == 10 + 80 + 512  # Groq's reserve without max_tokens is unpredictable (2-961 seen)
     assert cost(groq, max_tokens=100) == 10 + 80 + 100
+    assert cost(groq, max_tokens=0) == 10 + 80  # zero output reserve still needs the chat template
     assert cost(make_provider(server)) == 10 + 512  # other platforms keep the generic estimate
 
     ai.chat(prompt, model=model)  # the fake reports 4 tokens of usage and no limit headers
@@ -372,6 +386,81 @@ def test_limit_metadata_and_globs():
     assert Limit(1, "minute", scope="provider").key("p", "x") == "q:p:*:minute:requests"
 
 
+def test_observe_upserts_learned_limits_by_identity(clock):
+    store = MemoryStore()
+    provider = Provider("p", "https://p.example/v1", api_key="k", models=["m1"])
+    ai = make(FakeServer(), clock, provider, store=store)
+    first = [RateSnapshot("minute", "requests", 10, 9), RateSnapshot("day", "tokens", 1000, 900, scope="provider")]
+    second = [RateSnapshot("minute", "requests", 20, 19)]  # same identity, new amount
+    ai._router.observe("p", "m1", first)
+    ai._router.observe("p", "m1", second)
+    with store.transaction() as tx:
+        registry = list(tx[_learned_key(provider.state_id)])
+    assert registry == [
+        {"per": "day", "unit": "tokens", "scope": "provider", "model": None, "amount": 1000},
+        {"per": "minute", "unit": "requests", "scope": "model", "model": "m1", "amount": 20},
+    ]
+
+
+def test_compiled_globs_match_fnmatchcase():
+    patterns = ("*flash*", "provider:exact", "a_b%", "*-mini*", "CASE", "")
+    samples = (
+        "xflashy",
+        "flash",
+        "provider:exact",
+        "a_b%",
+        "foo-mini-bar",
+        "CASE",
+        "case",
+        "plain",
+        "",
+    )
+    assert Limit(1, "minute").applies_to("anything")  # models is None
+    for pattern in patterns:
+        limit = Limit(1, "minute", models=(pattern,))
+        for sample in samples:
+            assert limit.applies_to(sample) is fnmatch.fnmatchcase(sample, pattern)
+    models = [
+        ModelInfo(provider="p", id="flash-lite"),
+        ModelInfo(provider="p", id="other"),
+        ModelInfo(provider="provider", id="exact"),
+    ]
+    for model in models:
+        expected = next(
+            (
+                i
+                for i, pattern in enumerate(patterns)
+                if fnmatch.fnmatchcase(model.key, pattern) or fnmatch.fnmatchcase(model.id, pattern)
+            ),
+            len(patterns),
+        )
+        assert _rank(model, patterns) == expected
+        assert _rank(model, []) == 0
+
+
+def test_order_reuses_explicit_model_ranks(clock):
+    """Explicit ``models`` filter and prefer-order share the same ``_rank`` values."""
+    provider = make_provider(FakeServer(), name="p", models=["flash-lite", "other", "flash"])
+    ai = make(FakeServer(), clock, provider)
+    request = ai._router.prepare("hi", None, ["*flash*", "other"], (), None, {})
+    ordered = ai._router.order(request, ai._pools(), turn=0)
+    assert [m.id for m in ordered] == ["flash-lite", "flash", "other"]
+
+
+def test_status_single_pass_reads_models_for_all_providers(clock):
+    store = MemoryStore()
+    first = make(FakeServer(), clock, make_provider(FakeServer(), name="a", models=["m1"]), store=store)
+    second = make(FakeServer(), clock, make_provider(FakeServer(), name="b", models=["m2"]), store=store)
+    with store.transaction() as tx:
+        tx[f"cd:m:{first.providers[0].state_id}|m1"] = {"until": clock.now + 10, "failures": 1}
+        tx[f"cd:m:{second.providers[0].state_id}|m2"] = {"until": clock.now + 20, "failures": 1}
+        tx[f"cd:p:{first.providers[0].state_id}"] = {"until": clock.now + 5, "failures": 1}
+    combined = FreeAI(
+        [first.providers[0], second.providers[0]], clock=clock, sleep=clock.sleep, store=store, max_wait=0.0
+    )
+    assert combined.status() == {"models": {"a:m1": 10.0, "b:m2": 20.0}, "providers": {"a": 5.0}}
+
+
 def test_sqlite_store_shares_cooldowns_between_clients(tmp_path, clock):
     path = tmp_path / "state.db"
     server = FakeServer()
@@ -404,6 +493,77 @@ def test_failure_kind_rejected_has_no_cooldown():
     from freeai import CooldownPolicy
 
     assert CooldownPolicy().duration(FailureKind.REJECTED, 3, None) == 0
+
+
+def test_sqlite_flush_stores_compact_json(tmp_path):
+    store = SQLiteStore(tmp_path / "compact.db")
+    try:
+        payload = {"until": 100.0, "failures": 2}
+        with store.transaction() as tx:
+            tx["k"] = payload
+        row = store._conn().execute("SELECT value FROM freeai_state WHERE key = ?", ("k",)).fetchone()
+        assert row is not None
+        assert row[0] == json.dumps(payload, separators=(",", ":"))
+        with store.transaction() as tx:
+            assert tx["k"] == payload
+    finally:
+        store.close()
+
+
+def test_sqlite_keys_with_prefix_matches_iter_and_escapes_like(tmp_path):
+    store = SQLiteStore(tmp_path / "prefix.db")
+    try:
+        with store.transaction() as tx:
+            tx["cd:m:sid|alpha"] = {"until": 100.0, "failures": 1}
+            tx["cd:m:sid|beta"] = {"until": 100.0, "failures": 1}
+            tx["cd:m:other|gamma"] = {"until": 100.0, "failures": 1}
+            tx["cd:m:sid_x|delta"] = {"until": 100.0, "failures": 1}  # `_` must not be a LIKE wildcard
+            tx["plain%one"] = {"until": 100.0, "failures": 1}
+            tx["plainXone"] = {"until": 100.0, "failures": 1}
+            tx["CaseKey"] = {"until": 100.0, "failures": 1}
+
+        with store.transaction() as tx:
+            prefix = "cd:m:sid|"
+            assert list(tx.keys_with_prefix(prefix)) == ["cd:m:sid|alpha", "cd:m:sid|beta"]
+            assert sorted(k for k in tx if k.startswith(prefix)) == list(tx.keys_with_prefix(prefix))
+            assert [k for k, _ in tx.items_with_prefix(prefix)] == list(tx.keys_with_prefix(prefix))
+            assert cooldown_snapshot(tx, prefix, now=50.0) == {"alpha": 50.0, "beta": 50.0}
+            for key, entry in tx.items_with_prefix(prefix):
+                assert entry == tx[key]
+
+            assert list(tx.keys_with_prefix("plain%")) == ["plain%one"]
+            assert "plainXone" not in tx.keys_with_prefix("plain%")
+            assert list(tx.keys_with_prefix("case")) == []  # LIKE must not beat startswith on ASCII case
+            assert _like_prefix("a_b%") == r"a\_b\%%"
+
+            tx["cd:m:sid|dirty"] = {"until": 100.0, "failures": 1}
+            del tx["cd:m:sid|alpha"]
+            assert list(tx.keys_with_prefix(prefix)) == ["cd:m:sid|beta", "cd:m:sid|dirty"]
+            assert sorted(k for k in tx if k.startswith(prefix)) == list(tx.keys_with_prefix(prefix))
+            assert [k for k, _ in tx.items_with_prefix(prefix)] == list(tx.keys_with_prefix(prefix))
+            assert cooldown_snapshot(tx, prefix, now=50.0) == {"beta": 50.0, "dirty": 50.0}
+    finally:
+        store.close()
+
+
+def test_memory_keys_with_prefix_matches_iter():
+    store = MemoryStore()
+    with store.transaction() as tx:
+        tx["cd:m:sid|alpha"] = {"until": 100.0, "failures": 1}
+        tx["cd:m:sid|beta"] = {"until": 100.0, "failures": 1}
+        tx["cd:m:other|gamma"] = {"until": 100.0, "failures": 1}
+        tx["q:sid|*:minute:requests"] = {"used": 1}
+        prefix = "cd:m:sid|"
+        assert list(tx.keys_with_prefix(prefix)) == ["cd:m:sid|alpha", "cd:m:sid|beta"]
+        assert sorted(k for k in tx if k.startswith(prefix)) == list(tx.keys_with_prefix(prefix))
+        assert [k for k, _ in tx.items_with_prefix(prefix)] == list(tx.keys_with_prefix(prefix))
+        assert cooldown_snapshot(tx, prefix, now=50.0) == {"alpha": 50.0, "beta": 50.0}
+        for key, entry in tx.items_with_prefix(prefix):
+            assert entry == tx[key]
+        del tx["cd:m:sid|alpha"]
+        tx["cd:m:sid|dirty"] = {"until": 100.0, "failures": 1}
+        assert list(tx.keys_with_prefix(prefix)) == ["cd:m:sid|beta", "cd:m:sid|dirty"]
+        assert cooldown_snapshot(tx, prefix, now=50.0) == {"beta": 50.0, "dirty": 50.0}
 
 
 # -- header snapshots and requests the platform has not counted yet -----------------------------
@@ -549,6 +709,76 @@ def test_reservations_of_a_dead_process_expire():
     quota_observe(tx, "p", "m", snapshot, now + 301, "UTC")
     assert tx[key]["tat"] - (now + 301) == pytest.approx(2 * 6)
     assert "p:" + key not in tx  # pruned
+
+
+def test_corrupt_pending_map_is_replaced():
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:requests"
+    pending_key = "p:" + key
+    tx: dict = {pending_key: ["not", "a", "map"]}
+    pending_add(tx, "r1", [(key, 2.0)], expires_at=now + 300)
+    assert tx[pending_key] == {"r1": [2.0, now + 300]}
+    tx[pending_key] = "corrupt"
+    snapshot = RateSnapshot("minute", "requests", limit=10, remaining=8)
+    quota_observe(tx, "p", "m", snapshot, now, "UTC")
+    assert pending_key not in tx
+    assert tx[key]["tat"] - now == pytest.approx(2 * 6)
+
+
+def test_corrupt_pending_rows_are_skipped():
+    from freeai.limits import _pending_total
+
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:requests"
+    pending_key = "p:" + key
+    tx: dict = {
+        pending_key: {
+            "ok": [3.0, now + 300],
+            "short": [1.0],
+            "text": "nope",
+            "expired": [9.0, now - 1],
+        }
+    }
+    assert _pending_total(tx, key, now) == 3.0
+    assert tx[pending_key] == {"ok": [3.0, now + 300]}
+
+
+def test_corrupt_quota_and_observe_rows_are_ignored():
+    import threading
+
+    from freeai._observe import Observe
+    from freeai._routing_types import _learned_key, _provider_key
+
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:requests"
+    tx: dict = {key: "corrupt"}
+    quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", limit=10, remaining=8), now, "UTC")
+    assert isinstance(tx[key], dict) and "tat" in tx[key]
+
+    provider = Provider("p", "https://p.example/v1", api_key="k", models=["m"])
+    store = MemoryStore()
+    with store.transaction() as raw:
+        raw[_learned_key(provider.state_id)] = "nope"
+        raw[_provider_key(provider.state_id)] = "bad"
+        raw[f"cd:m:{provider.state_id}|m"] = "bad"
+    observe = Observe(
+        lock=threading.Lock(),
+        store=store,
+        by_name={"p": provider},
+        providers=[provider],
+        clock=lambda: 50.0,
+    )
+    assert observe.status() == {"models": {}, "providers": {}}
+    observe.observe("p", "m", [RateSnapshot("minute", "requests", limit=10, remaining=9)])
+    with store.transaction() as raw:
+        assert isinstance(raw[_learned_key(provider.state_id)], list)
+
+    with store.transaction() as raw:
+        raw[_learned_key(provider.state_id)] = [{"per": "minute"}]
+    observe.observe("p", "m", [RateSnapshot("hour", "tokens", limit=100, remaining=50)])
+    with store.transaction() as raw:
+        rows = raw[_learned_key(provider.state_id)]
+        assert all("unit" in row and "amount" in row for row in rows)
 
 
 def test_unaccepted_reservations_are_shared_between_processes(tmp_path, clock):

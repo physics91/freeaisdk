@@ -8,9 +8,12 @@ attempts of one logical request.
 
 from __future__ import annotations
 
+import math
 import time
+from collections.abc import Mapping
 from typing import Any
 
+from ._routing_types import _usage_number
 from .types import Attempt
 
 __all__ = ["attempt_attributes", "instrument"]
@@ -25,23 +28,25 @@ def attempt_attributes(attempt: Attempt) -> dict[str, AttributeValue]:
         "gen_ai.provider.name": attempt.provider,
         "gen_ai.request.model": attempt.model,
         "freeai.attempt.ok": attempt.ok,
-        "freeai.attempt.latency_s": attempt.latency,
     }
+    if math.isfinite(attempt.latency):
+        attributes["freeai.attempt.latency_s"] = attempt.latency
     if attempt.served_model:
         attributes["gen_ai.response.model"] = attempt.served_model
-    usage = attempt.usage or {}
+    usage = attempt.usage if isinstance(attempt.usage, Mapping) else {}
     for source, target in (
         ("prompt_tokens", "gen_ai.usage.input_tokens"),
         ("completion_tokens", "gen_ai.usage.output_tokens"),
     ):
-        value = usage.get(source)
-        if isinstance(value, int) and not isinstance(value, bool):
-            attributes[target] = value
+        number = _usage_number(usage.get(source))
+        if number is not None:
+            attributes[target] = int(number)
     if not attempt.ok:
         attributes["error.type"] = str(attempt.kind or "unknown")
         if attempt.scope is not None:
             attributes["freeai.failure.scope"] = str(attempt.scope)
-        attributes["freeai.cooldown_s"] = attempt.cooldown
+        if not math.isnan(attempt.cooldown):
+            attributes["freeai.cooldown_s"] = attempt.cooldown  # +inf is valid (AUTH)
     if attempt.status is not None:
         attributes["http.response.status_code"] = attempt.status
     return attributes
@@ -61,10 +66,11 @@ def instrument(ai: Any, *, tracer_provider: Any = None) -> None:
 
     def emit(attempt: Attempt) -> None:
         end = time.time_ns()
+        latency = attempt.latency if math.isfinite(attempt.latency) else 0.0
         span = tracer.start_span(
             f"chat {attempt.model}",
             kind=SpanKind.CLIENT,
-            start_time=end - int(attempt.latency * 1e9),
+            start_time=end - int(max(0.0, latency) * 1e9),
             attributes=attempt_attributes(attempt),
         )
         if not attempt.ok:
