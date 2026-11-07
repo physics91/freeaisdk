@@ -33,8 +33,10 @@ def _effective_status(error: dict[str, Any], status: int) -> int:
     code = error.get("code")
     if isinstance(code, int) and not isinstance(code, bool) and 100 <= code < 600:
         return code
-    if isinstance(code, str) and code.isdigit() and 100 <= int(code) < 600:
-        return int(code)
+    if isinstance(code, str) and code.isdigit():
+        parsed = int(code)
+        if 100 <= parsed < 600:
+            return parsed
     if status != 200:
         return status
     metadata = _metadata(error)
