@@ -67,20 +67,25 @@ class CooldownPolicy:
         return min(base * 2.0 ** (failures - 1), self.max_backoff)
 
 
-def cooldown_ready_at(tx: State, key: str) -> float:
+def _cooldown_entry(tx: State, key: str) -> dict[str, Any] | None:
     entry = tx.get(key)
+    return entry if isinstance(entry, dict) else None
+
+
+def cooldown_ready_at(tx: State, key: str) -> float:
+    entry = _cooldown_entry(tx, key)
     return float(entry["until"]) if entry else 0.0
 
 
 def cooldown_failures(tx: State, key: str) -> int:
-    entry = tx.get(key)
+    entry = _cooldown_entry(tx, key)
     return int(entry["failures"]) if entry else 0
 
 
 def cooldown_fail(
     tx: State, key: str, kind: FailureKind, hint: float | None, now: float, policy: CooldownPolicy
 ) -> float:
-    entry = tx.get(key) or {}
+    entry = _cooldown_entry(tx, key) or {}
     failures = int(entry.get("failures", 0)) + 1
     cooldown = policy.duration(kind, failures, hint)
     until = float(entry.get("until", 0.0))
@@ -108,5 +113,5 @@ def cooldown_snapshot(tx: State, prefix: str, now: float) -> dict[str, float]:
     return {
         key[len(prefix) :]: float(entry["until"]) - now
         for key, entry in items
-        if float(entry["until"]) > now
+        if isinstance(entry, dict) and float(entry["until"]) > now
     }

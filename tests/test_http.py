@@ -244,6 +244,17 @@ def test_cooldown_policy():
     assert policy.duration(FailureKind.NOT_ENTITLED, 1, None) == 86400
 
 
+def test_cooldown_ignores_corrupt_entries():
+    from freeai.cooldown import cooldown_fail, cooldown_failures, cooldown_ready_at, cooldown_snapshot
+
+    tx = {"cd:p:x": "bad", "cd:p:y": {"until": 100.0, "failures": 2}}
+    assert cooldown_ready_at(tx, "cd:p:x") == 0.0
+    assert cooldown_failures(tx, "cd:p:x") == 0
+    assert cooldown_fail(tx, "cd:p:x", FailureKind.RATE_LIMIT, None, 1.0, CooldownPolicy()) == 30.0
+    assert tx["cd:p:x"] == {"until": 31.0, "failures": 1}
+    assert cooldown_snapshot(tx, "cd:p:", 0.0) == {"x": 31.0, "y": 100.0}
+
+
 def test_zone_is_cached():
     assert _zone("America/Los_Angeles") is _zone("America/Los_Angeles")
     assert _zone("UTC") is _zone("UTC")
