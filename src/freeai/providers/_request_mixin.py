@@ -31,7 +31,10 @@ class RequestMixin:
 
     def prepare_payload(self, model_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Adapt a request to this provider (drop parameters it rejects, set the model)."""
-        body = {key: value for key, value in payload.items() if key not in self.drop_params}
+        if self.drop_params:
+            body = {key: value for key, value in payload.items() if key not in self.drop_params}
+        else:
+            body = dict(payload)
         body["model"] = model_id
         return body
 
