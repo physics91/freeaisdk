@@ -249,13 +249,14 @@ def _quota_state(value: Any) -> dict[str, Any] | None:
 
 
 def _quota_number(value: Any) -> float | None:
-    """Numeric quota field; bools and non-numeric strings are rejected."""
+    """Numeric quota field; bools, non-numeric strings, and non-finite values are rejected."""
     if isinstance(value, bool) or value is None:
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _reading_order(per: Window, old: dict[str, Any] | None, until: float | None, period: str | None) -> int:

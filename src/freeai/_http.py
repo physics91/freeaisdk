@@ -9,6 +9,7 @@ from __future__ import annotations
 import email.utils
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import Iterable, Mapping
@@ -140,6 +141,8 @@ def parse_reset(value: str, wall: float) -> float | None:
         number = float(value)
     except ValueError:
         return _parse_duration(value)
+    if not math.isfinite(number):
+        return None
     if number > 1e12:  # epoch milliseconds (OpenRouter)
         return max(0.0, number / 1000 - wall)
     if number > 1e9:  # epoch seconds

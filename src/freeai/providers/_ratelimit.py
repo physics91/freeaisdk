@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from collections.abc import Mapping
@@ -21,9 +22,10 @@ def _as_window(name: str | None) -> Window | None:
 
 def _number(value: str) -> float | None:
     try:
-        return float(value)
+        number = float(value)
     except ValueError:
         return None
+    return number if math.isfinite(number) else None
 
 
 def rate_snapshots_from_headers(
