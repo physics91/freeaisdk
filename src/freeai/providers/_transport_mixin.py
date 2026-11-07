@@ -21,9 +21,14 @@ class TransportMixin:
     """
 
     def _headers(self) -> dict[str, str]:
+        """Stable auth/extra headers. Built once; callers must not mutate the returned dict."""
+        cached = getattr(self, "_headers_cached", None)
+        if cached is not None:
+            return cached
         headers = dict(self._extra_headers)
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        self._headers_cached = headers
         return headers
 
     def _require_key(self) -> None:
