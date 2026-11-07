@@ -8,7 +8,7 @@ from dataclasses import dataclass
 @dataclass(slots=True)
 class _Ewma:
     success: float = 1.0
-    latency: float = 1.0
+    latency: float | None = None  # set only after a successful sample
     samples: int = 0
 
 
@@ -27,14 +27,22 @@ class HealthStats:
         a = self.alpha if stat.samples else 1.0
         stat.success = (1 - a) * stat.success + a * (1.0 if ok else 0.0)
         if ok:
-            stat.latency = (1 - a) * stat.latency + a * max(latency, 0.0) if stat.samples else max(latency, 0.0)
+            lat = max(latency, 0.0)
+            if stat.latency is None:
+                stat.latency = lat
+            else:
+                a = self.alpha
+                stat.latency = (1 - a) * stat.latency + a * lat
         stat.samples += 1
 
     def score(self, key: str) -> float:
         stat = self._stats.get(key)
         if stat is None:
             return 1.0
-        return stat.success / (1.0 + stat.latency)
+        return stat.success / (1.0 + (stat.latency or 0.0))
 
     def snapshot(self) -> dict[str, dict[str, float]]:
-        return {k: {"success": v.success, "latency": v.latency, "samples": v.samples} for k, v in self._stats.items()}
+        return {
+            k: {"success": v.success, "latency": v.latency or 0.0, "samples": float(v.samples)}
+            for k, v in self._stats.items()
+        }

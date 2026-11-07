@@ -10,6 +10,7 @@ from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo,
 from freeai._core import Wait
 from freeai._messages import to_response
 from freeai._sse import EventReader
+from freeai.health import HealthStats
 
 from .conftest import FakeClock, FakeServer, error, ok, sse
 
@@ -180,3 +181,13 @@ def test_to_response_missing_choices_is_unavailable(body):
     with pytest.raises(ProviderFailure) as info:
         to_response(model, body, retry_on_empty=True)
     assert info.value.kind is FailureKind.UNAVAILABLE
+
+
+def test_health_latency_seeds_from_first_success_after_failures():
+    health = HealthStats(alpha=0.3)
+    health.record("m", False, 0.5)
+    health.record("m", True, 0.2)
+    snap = health.snapshot()["m"]
+    assert snap["latency"] == pytest.approx(0.2)
+    assert snap["success"] == pytest.approx(0.3)
+    assert health.score("m") == pytest.approx(0.3 / 1.2)
