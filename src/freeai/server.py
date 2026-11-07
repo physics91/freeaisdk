@@ -217,7 +217,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(status, {"error": error}, headers)
 
     def _json(self, status: int, body: Any, headers: Mapping[str, str] | None = None) -> None:
-        data = json.dumps(body, default=str).encode()
+        data = json.dumps(body, default=str, separators=(",", ":")).encode()
         self._start(status, {"Content-Type": "application/json", "Content-Length": str(len(data)), **(headers or {})})
         self.wfile.write(data)
 
@@ -232,7 +232,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._started = True
 
     def _event(self, payload: dict[str, Any]) -> None:
-        self.wfile.write(b"data: " + json.dumps(payload, default=str).encode() + b"\n\n")
+        self.wfile.write(b"data: " + json.dumps(payload, default=str, separators=(",", ":")).encode() + b"\n\n")
         self.wfile.flush()
 
 
