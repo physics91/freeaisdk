@@ -36,7 +36,7 @@ _SLOT_POLL = 0.25  # re-check interval while a provider's concurrency slots or a
 class Admission:
     """Process-local slots/probes plus store-backed quota charge for the next ready model."""
 
-    __slots__ = ("_by_name", "_cost", "_inflight", "_lock", "_probing", "clock", "store")
+    __slots__ = ("_by_name", "_cost", "_inflight", "_lock", "_probe_claims", "_probing", "clock", "store")
 
     def __init__(
         self,
@@ -54,6 +54,7 @@ class Admission:
         self._by_name = by_name
         self._inflight = inflight
         self._probing = probing
+        self._probe_claims: dict[str, frozenset[str]] = {}
         self.clock = clock
         self._cost = cost
 
@@ -108,7 +109,9 @@ class Admission:
                             ttl = max(_PENDING_TTL, 2 * provider.timeout)
                             pending_add(tx, reservation.id, charges, now + ttl)
                         self._inflight[provider.name] = self._inflight.get(provider.name, 0) + 1
-                        self._probing.update(probes)  # half-open: one trial request after a cooldown
+                        claimed = frozenset(probes)
+                        self._probe_claims[model_key] = claimed
+                        self._probing.update(claimed)  # half-open: one trial request after a cooldown
                         return model, now, reservation
                 earliest = min(earliest, ready)
             return None, earliest, _NO_RESERVATION
@@ -163,7 +166,9 @@ class Admission:
             count = self._inflight.get(provider.name, 0)
             if count > 0:
                 self._inflight[provider.name] = count - 1
-            self._probing.difference_update({_model_key(sid, model.id), _provider_key(sid)})
+            # Only drop probe keys this attempt claimed (do not clear a peer's provider probe).
+            claimed = self._probe_claims.pop(_model_key(sid, model.id), frozenset())
+            self._probing.difference_update(claimed)
 
     def drop_pending(self, reservation: Reservation) -> None:
         if reservation.keys:

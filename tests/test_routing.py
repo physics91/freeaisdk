@@ -131,6 +131,31 @@ def test_half_open_admits_one_probe(clock):
     assert isinstance(other.next(), ModelInfo)
 
 
+def test_half_open_release_keeps_peer_provider_probe(clock):
+    from freeai._routing_types import _model_key, _provider_key
+
+    server = FakeServer()
+    provider = plain(server, models=["m1", "m2", "m3"])
+    ai = make(clock, provider, max_wait=10)
+    sid = provider.state_id
+    model_key = _model_key(sid, "m1")
+    provider_key = _provider_key(sid)
+    with ai._router.store.transaction() as tx:
+        tx[model_key] = {"until": 0.0, "failures": 1}
+    request = ai._router.prepare("hi", None, None, (), None, {})
+    models = {m.id: m for m in ai.models()}
+    first, _, _ = ai._router._admission.reserve([models["m1"]], request)
+    assert first is not None and model_key in ai._router._probing
+    with ai._router.store.transaction() as tx:
+        tx[provider_key] = {"until": 0.0, "failures": 1}
+    second, _, _ = ai._router._admission.reserve([models["m2"]], request)
+    assert second is not None and provider_key in ai._router._probing
+    ai._router._admission.release_slot(models["m1"])
+    assert provider_key in ai._router._probing
+    third, ready, _ = ai._router._admission.reserve([models["m3"]], request)
+    assert third is None and ready == pytest.approx(clock.now + 0.25)
+
+
 def test_max_concurrency_limits_inflight_requests(clock):
     server = FakeServer()
     ai = make(clock, plain(server, models=["m1"], max_concurrency=1), max_wait=1)
