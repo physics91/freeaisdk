@@ -218,10 +218,10 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
     if rolling and limit.per in _WINDOW_SECONDS:
         interval = _WINDOW_SECONDS[limit.per] / max(snapshot.limit, 1e-9)
         served = now + seen * interval  # when the platform's own count is whole again
-        old_amount = _quota_number(old.get("amount")) if old else None
         old_served = _quota_number(old.get("served")) if old else None
-        if requests and old_amount == snapshot.limit and old_served is not None:
-            served = max(served, old_served)  # only ever moves forward for requests
+        if requests and old_served is not None:
+            # Platforms never hand requests back, even when the reported limit amount changes.
+            served = max(served, old_served)
         tat = served + _pending_total(tx, key, now) * interval
         state: dict[str, Any] = {"tat": tat, "amount": snapshot.limit, "since": now}
         if requests:

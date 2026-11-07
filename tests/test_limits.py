@@ -378,6 +378,21 @@ def test_month_readings_keep_seen_across_short_until_drift():
     assert tx[key]["seen"] == 990
 
 
+def test_rolling_request_served_survives_limit_amount_change():
+    """A later header with a different limit amount must not forget requests already counted."""
+    tx: dict = {}
+    now = 1000.0
+    key = quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", 10, 5, rolling=True), now, "UTC").key(
+        "p", "m"
+    )
+    served = tx[key]["served"]
+    assert served == pytest.approx(now + 5 * 6.0)
+    quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", 60, 60, rolling=True), now + 1, "UTC")
+    assert tx[key]["amount"] == 60
+    assert tx[key]["served"] == pytest.approx(served)
+    assert tx[key]["tat"] >= served
+
+
 def test_groq_charges_its_chat_template_too(server, clock):
     groq = Groq(api_key="k", http_client=server.client())
     model = groq.list_models()[0].id
