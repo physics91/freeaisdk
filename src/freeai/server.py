@@ -42,7 +42,9 @@ class ProxyServer(ThreadingHTTPServer):
         self.ai = ai
         self.token = token or None
         self._token_bytes = None if self.token is None else self.token.encode()
-        self._secrets = [p.api_key for p in ai.providers if p.api_key and len(p.api_key) >= 8]
+        # Redact every non-trivial key; very short placeholders (1-3 chars) skip replace() to
+        # avoid mangling ordinary error text when someone uses api_key="k" in tests.
+        self._secrets = [p.api_key for p in ai.providers if p.api_key and len(p.api_key) >= 4]
         super().__init__(address, _Handler)
 
     @property

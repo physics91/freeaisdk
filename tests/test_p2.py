@@ -309,6 +309,18 @@ def test_proxy_redacts_provider_keys(proxy):
     assert "sk-live-0123456789" not in reply.text and "[redacted]" in reply.text
 
 
+def test_proxy_skips_redacting_very_short_api_keys(proxy):
+    # Keys shorter than 4 chars would blank huge swaths of error text if redacted as substrings.
+    upstream = FakeServer()
+    upstream.on("m1", error(401, "ab is not a valid key; about to fail"))
+    ai = FreeAI(plain(upstream, ["m1"], api_key="ab"), max_wait=0)
+    url = proxy(ai).url
+    reply = httpx.post(f"{url}/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert reply.status_code == 503
+    assert "about to fail" in reply.text
+    assert reply.text.count("[redacted]") == 0
+
+
 # -- CLI and OTel --------------------------------------------------------------------------------
 
 
