@@ -15,7 +15,7 @@ from freeai.aio import AsyncFreeAI
 from freeai.compat import AsyncOpenAI, OpenAI, parse_model
 from freeai.otel import attempt_attributes
 from freeai.server import MAX_BODY_BYTES, ProxyServer
-from freeai.types import Attempt
+from freeai.types import Attempt, ChatResponse
 
 from .conftest import FakeServer, delta, error, sse
 
@@ -233,6 +233,39 @@ def test_cli_errors_without_network(monkeypatch, capsys):
     assert "without a token" in capsys.readouterr().err
     assert main(["models"]) == 0
     assert "groq:openai/gpt-oss-120b" in capsys.readouterr().out
+
+
+def test_cli_max_tokens_zero_is_forwarded(monkeypatch, capsys):
+    seen: dict = {}
+
+    class _FakeAI:
+        @classmethod
+        def from_env(cls, **kwargs):
+            return cls()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def chat(self, prompt, **params):
+            seen.update(params)
+            return ChatResponse(
+                text="ok",
+                provider="p",
+                model="m",
+                requested_model="m",
+                message={"role": "assistant", "content": "ok"},
+                finish_reason="stop",
+                usage=None,
+                raw={},
+            )
+
+    monkeypatch.setattr("freeai.__main__.FreeAI", _FakeAI)
+    assert main(["chat", "hi", "--max-tokens", "0"]) == 0
+    assert seen.get("max_tokens") == 0
+    assert "ok" in capsys.readouterr().out
 
 
 def test_attempt_attributes_follow_genai_conventions():

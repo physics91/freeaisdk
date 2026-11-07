@@ -75,7 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             print(m.key)
                     return 0
                 params: dict[str, Any] = {}
-                if args.max_tokens:
+                if args.max_tokens is not None:
                     params["max_tokens"] = args.max_tokens
                 if args.stream:
                     for chunk in ai.stream(args.prompt, system=args.system, model=args.model, **params):
@@ -84,7 +84,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else:
                     response = ai.chat(args.prompt, system=args.system, model=args.model, **params)
                     print(response.text)
-                    print(f"[{response.provider}:{response.model}, {len(response.attempts)} attempt(s)]", file=sys.stderr)
+                    print(
+                        f"[{response.provider}:{response.model}, {len(response.attempts)} attempt(s)]",
+                        file=sys.stderr,
+                    )
             except FreeAIError as exc:
                 print(f"freeai: {exc}", file=sys.stderr)
                 return 1
