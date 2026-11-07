@@ -217,10 +217,29 @@ def test_first_token_timeout_counts_only_data_events():
 
     fake2 = FakeClock()
     reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake2)
-    reader.feed('data: {"choices": []}')
-    assert reader.feed("") == [{"choices": []}]
+    reader.feed('data: {"choices": [{"delta": {"content": "hi"}}]}')
+    assert reader.feed("") == [{"choices": [{"delta": {"content": "hi"}}]}]
     fake2.now += 60
-    assert reader.feed(": keepalive") == []  # output already started: no first-token deadline
+    assert reader.feed(": keepalive") == []  # real output started: no first-token deadline
+
+
+def test_first_token_timeout_ignores_role_only_and_empty_choices():
+    fake = FakeClock()
+    provider = Provider("p", "https://p.example")
+    reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake)
+    reader.feed('data: {"choices":[{"delta":{"role":"assistant"}}]}')
+    assert reader.feed("") == [{"choices": [{"delta": {"role": "assistant"}}]}]
+    fake.now += 6
+    with pytest.raises(Exception, match="no streamed output within 5s"):
+        reader.feed(": keepalive")
+
+    fake2 = FakeClock()
+    reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake2)
+    reader.feed('data: {"choices":[]}')
+    assert reader.feed("") == [{"choices": []}]
+    fake2.now += 6
+    with pytest.raises(Exception, match="no streamed output within 5s"):
+        reader.feed(": ping")
 
 
 def test_stream_early_exit_releases_the_slot(clock):
