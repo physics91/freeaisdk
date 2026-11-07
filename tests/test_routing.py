@@ -203,6 +203,8 @@ def test_estimate_tokens_honors_zero_max_tokens():
     base = {"messages": [{"role": "user", "content": "hi"}]}
     assert _estimate_tokens({**base, "max_tokens": 0}) == 0.0
     assert _estimate_tokens({**base, "max_completion_tokens": 0}) == 0.0
+    assert _estimate_tokens({**base, "max_tokens": "100"}) == 100.0
+    assert _estimate_tokens({**base, "max_tokens": True}) == float(512)
     assert _estimate_tokens(base) == float(512)
 
 
