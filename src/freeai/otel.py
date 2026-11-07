@@ -8,6 +8,7 @@ attempts of one logical request.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -27,8 +28,9 @@ def attempt_attributes(attempt: Attempt) -> dict[str, AttributeValue]:
         "gen_ai.provider.name": attempt.provider,
         "gen_ai.request.model": attempt.model,
         "freeai.attempt.ok": attempt.ok,
-        "freeai.attempt.latency_s": attempt.latency,
     }
+    if math.isfinite(attempt.latency):
+        attributes["freeai.attempt.latency_s"] = attempt.latency
     if attempt.served_model:
         attributes["gen_ai.response.model"] = attempt.served_model
     usage = attempt.usage if isinstance(attempt.usage, Mapping) else {}
@@ -63,10 +65,11 @@ def instrument(ai: Any, *, tracer_provider: Any = None) -> None:
 
     def emit(attempt: Attempt) -> None:
         end = time.time_ns()
+        latency = attempt.latency if math.isfinite(attempt.latency) else 0.0
         span = tracer.start_span(
             f"chat {attempt.model}",
             kind=SpanKind.CLIENT,
-            start_time=end - int(attempt.latency * 1e9),
+            start_time=end - int(max(0.0, latency) * 1e9),
             attributes=attempt_attributes(attempt),
         )
         if not attempt.ok:
