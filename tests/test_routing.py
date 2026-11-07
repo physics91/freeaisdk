@@ -6,18 +6,29 @@ import random
 import httpx
 import pytest
 
-from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, ProviderFailure, RetryBudget
+from freeai import (
+    ExhaustedError,
+    FailureKind,
+    FreeAI,
+    Gemini,
+    Groq,
+    ModelInfo,
+    Provider,
+    ProviderFailure,
+    RetryBudget,
+    StreamInterrupted,
+)
 from freeai._core import Wait
 from freeai._messages import _estimate_tokens, content_text, to_chunk, to_response
 from freeai._plan import Plan
 from freeai._routing_types import _total_tokens
 from freeai._sse import EventReader
 from freeai.health import HealthStats
-from freeai.limits import rpm
+from freeai.limits import rpm, tpm
 from freeai.providers._catalog import _catalog_model
 from freeai.types import Requirements
 
-from .conftest import FakeClock, FakeServer, error, ok, sse
+from .conftest import FakeClock, FakeServer, delta, error, ok, sse
 
 ALPHA, BETA = "alpha/one:free", "beta/two:free"
 
@@ -245,6 +256,23 @@ def test_stream_abandon_after_output_keeps_request_quota(clock):
     with pytest.raises(ExhaustedError) as info:
         ai.chat("hi")
     assert info.value.next_available_in == pytest.approx(61.0)
+
+
+def test_accepted_stream_failure_without_usage_keeps_token_estimate(clock):
+    failing = {
+        "error": {"code": 502, "message": "crash"},
+        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}],
+    }
+    server = FakeServer()
+    server.on("m1", sse(delta("hi"), failing), ok())
+    ai = make(clock, plain(server, models=["m1"], limits=[tpm(100)]))
+    with pytest.raises(StreamInterrupted):
+        list(ai.stream("hi", max_tokens=80))
+    clock.now += 16  # past UNAVAILABLE cooldown; token estimate must still block
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi", max_tokens=80)
+    assert info.value.next_available_in == pytest.approx(21.0)
+    assert server.models_called == ["m1"]
 
 
 @pytest.mark.parametrize(

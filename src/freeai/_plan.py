@@ -54,6 +54,7 @@ class Plan:
         self._active: ModelInfo | None = None
         self._reservation = _NO_RESERVATION
         self._admitted: list[RateSnapshot] = []  # headers of the active attempt, applied on arrival
+        self._accepted = False  # True after :meth:`admitted` (platform accepted this attempt)
 
     @property
     def providers(self) -> set[str]:
@@ -83,7 +84,7 @@ class Plan:
             raise ExhaustedError("every candidate model failed", self.attempts)
         model, ready_at, reservation = router.reserve(remaining, self.request)
         if model is not None:
-            self._active, self._reservation, self._admitted = model, reservation, []
+            self._active, self._reservation, self._admitted, self._accepted = model, reservation, [], False
             return model
         delay = max(0.0, ready_at - now)
         if math.isinf(delay):
@@ -118,6 +119,7 @@ class Plan:
         reservation, self._reservation = self._reservation, _NO_RESERVATION
         snapshots = list(snapshots)
         self._admitted.extend(snapshots)
+        self._accepted = True
         router = self.router
         with router._lock, router.store.transaction() as tx:
             # Drop pending before observe so header readings are not double-counted with the reserve.
@@ -193,12 +195,19 @@ class Plan:
                     )
                 else:
                     cooldown = 0.0
-                # Tokens: settle to actual usage (0 when the server never answered).
+                # Tokens: settle to usage when known. After the platform accepted the attempt
+                # (stream headers), keep the estimate if usage is missing so TPM is not undercounted.
+                # Otherwise refund the estimate (refused / never accepted / transport).
                 # Requests: stay charged once the platform may have counted them; undo only when the
                 # attempt never reached the platform (transport failure before any HTTP response).
                 cost = router.cost(provider, self.request)
                 used = _total_tokens(usage)
-                delta = (used if used is not None else 0.0) - cost.tokens
+                if used is not None:
+                    delta = used - cost.tokens
+                elif self._accepted:
+                    delta = 0.0
+                else:
+                    delta = -cost.tokens
                 limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
                 quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
                 if not failure.reached and reservation.keys and cost.requests:
