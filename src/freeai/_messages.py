@@ -31,6 +31,13 @@ _TOKENS_PER_ATTACHMENT = 1000  # images/audio/files count as a flat amount inste
 _DEFAULT_OUTPUT_TOKENS = 512  # output reserve when the caller sets no max_tokens
 
 
+def _tool_call_items(value: Any) -> tuple[dict[str, Any], ...]:
+    """Only a list of dicts counts; a bare dict would become ``tuple(dict)`` key chars otherwise."""
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, dict))
+
+
 def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool) -> ChatResponse:
     choices = data.get("choices") or []
     choice = choices[0] if choices and isinstance(choices[0], dict) else None
@@ -38,7 +45,7 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
         raise ProviderFailure(FailureKind.UNAVAILABLE, f"{model.provider}: {model.id} returned an error choice")
     message = choice.get("message") or {}
     text = content_text(message.get("content"))
-    if not text.strip() and not message.get("tool_calls"):
+    if not text.strip() and not _tool_call_items(message.get("tool_calls")):
         if choice.get("finish_reason") == "length":
             raise ProviderFailure(
                 FailureKind.OUTPUT_LIMIT,
@@ -71,7 +78,7 @@ def to_chunk(model: ModelInfo, event: dict[str, Any]) -> StreamChunk:
         provider=model.provider,
         model=event.get("model") or model.id,
         reasoning=reasoning if isinstance(reasoning, str) else "",
-        tool_calls=tuple(delta.get("tool_calls") or ()),
+        tool_calls=_tool_call_items(delta.get("tool_calls")),
         finish_reason=choice.get("finish_reason"),
         usage=event.get("usage"),
         raw=event,
