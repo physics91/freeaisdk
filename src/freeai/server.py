@@ -139,14 +139,45 @@ class _Handler(BaseHTTPRequestHandler):
                 self._event(chunk_dict(chunk))
         except StreamInterrupted as exc:
             # Error ends the stream; do not send [DONE] or clients may treat partial output as success.
-            self._event({"error": {"message": self.server.redact(str(exc)), "type": "server_error"}})
+            self._stream_error(chunks, {"message": self.server.redact(str(exc)), "type": "server_error"})
+            return
+        except OutputLimitError as exc:
+            self._stream_error(
+                chunks,
+                {
+                    "message": self.server.redact(str(exc)),
+                    "type": "invalid_request_error",
+                    "code": "output_limit",
+                },
+            )
+            return
+        except FreeAIError as exc:
+            self._stream_error(
+                chunks,
+                {
+                    "message": self.server.redact(str(exc)),
+                    "type": "server_error",
+                    "code": "upstream_error",
+                },
+            )
             return
         except (BrokenPipeError, ConnectionResetError):
             if hasattr(chunks, "close"):
                 chunks.close()  # client went away: release the model's slot
             return
+        except Exception as exc:
+            self._stream_error(
+                chunks,
+                {"message": self.server.redact(f"{type(exc).__name__}: {exc}"), "type": "server_error"},
+            )
+            return
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
+
+    def _stream_error(self, chunks: Iterator[StreamChunk], error: dict[str, Any]) -> None:
+        if hasattr(chunks, "close"):
+            chunks.close()
+        self._event({"error": error})
 
     # -- helpers ---------------------------------------------------------------------------
 
