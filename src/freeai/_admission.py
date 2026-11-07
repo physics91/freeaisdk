@@ -77,29 +77,30 @@ class Admission:
                 provider_ready = float(provider_entry["until"]) if provider_entry else 0.0
                 provider_failures = int(provider_entry["failures"]) if provider_entry else 0
                 ready = max(model_ready, provider_ready)
-                if sid not in learned_by_sid:
-                    learned_by_sid[sid] = list(tx.get(_learned_key(sid), []))
-                limits = self.limits(tx, provider, model.id, learned=learned_by_sid[sid])
-                cost = self._cost(provider, request)
+                # Skip learned/limits/cost work while a cooldown already keeps the candidate busy.
                 if ready <= now:
+                    if sid not in learned_by_sid:
+                        learned_by_sid[sid] = list(tx.get(_learned_key(sid), []))
+                    limits = self.limits(tx, provider, model.id, learned=learned_by_sid[sid])
+                    cost = self._cost(provider, request)
                     ready = quota_ready_at(tx, limits, sid, model.id, cost, now, provider.reset_tz)
-                probes = [
-                    key
-                    for key, fails in ((model_key, model_failures), (provider_key, provider_failures))
-                    if fails > 0
-                ]
-                if ready <= now and (self._slots_full(provider) or self._probing.intersection(probes)):
-                    ready = now + _SLOT_POLL
-                if ready <= now:
-                    charges = quota_charge(tx, limits, sid, model.id, cost, now, provider.reset_tz)
-                    reservation = _NO_RESERVATION
-                    if charges:
-                        reservation = Reservation(secrets.token_hex(8), tuple(key for key, _ in charges))
-                        ttl = max(_PENDING_TTL, 2 * provider.timeout)
-                        pending_add(tx, reservation.id, charges, now + ttl)
-                    self._inflight[provider.name] = self._inflight.get(provider.name, 0) + 1
-                    self._probing.update(probes)  # half-open: one trial request after a cooldown
-                    return model, now, reservation
+                    probes = [
+                        key
+                        for key, fails in ((model_key, model_failures), (provider_key, provider_failures))
+                        if fails > 0
+                    ]
+                    if ready <= now and (self._slots_full(provider) or self._probing.intersection(probes)):
+                        ready = now + _SLOT_POLL
+                    if ready <= now:
+                        charges = quota_charge(tx, limits, sid, model.id, cost, now, provider.reset_tz)
+                        reservation = _NO_RESERVATION
+                        if charges:
+                            reservation = Reservation(secrets.token_hex(8), tuple(key for key, _ in charges))
+                            ttl = max(_PENDING_TTL, 2 * provider.timeout)
+                            pending_add(tx, reservation.id, charges, now + ttl)
+                        self._inflight[provider.name] = self._inflight.get(provider.name, 0) + 1
+                        self._probing.update(probes)  # half-open: one trial request after a cooldown
+                        return model, now, reservation
                 earliest = min(earliest, ready)
             return None, earliest, _NO_RESERVATION
 
