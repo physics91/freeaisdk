@@ -349,6 +349,8 @@ def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) 
     state = _usable_quota_state(state)
     capacity_n = _quota_number(state.get("amount")) if state else None
     capacity = limit.amount if capacity_n is None else capacity_n
+    if capacity <= 0:
+        return math.inf  # no allowance; never ready for a positive charge
     if _rolling(limit.per, state):
         period = _WINDOW_SECONDS[limit.per]
         interval = period / capacity
@@ -372,6 +374,13 @@ def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) ->
     state = _usable_quota_state(state)
     capacity_n = _quota_number(state.get("amount")) if state else None
     capacity = limit.amount if capacity_n is None else capacity_n
+    if capacity <= 0:
+        if _rolling(limit.per, state):
+            return {"tat": math.inf, "amount": capacity, "since": now}
+        added_zero: dict[str, Any] = {"used": max(0.0, amount), "amount": capacity}
+        if limit.per not in _ROLLING_BY_DEFAULT:
+            added_zero["period"] = _period(limit.per, now, tz)
+        return added_zero
     if _rolling(limit.per, state):
         interval = _WINDOW_SECONDS[limit.per] / capacity
         tat = _quota_number(state.get("tat")) if state else now
