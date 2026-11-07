@@ -57,7 +57,9 @@ class Observe:
         provider = self._by_name[provider_name]
         sid = provider.state_id
         now = self.clock()
-        by_id = {_learned_identity(entry): dict(entry) for entry in tx.get(_learned_key(sid), [])}
+        raw_learned = tx.get(_learned_key(sid), [])
+        learned_rows = raw_learned if isinstance(raw_learned, list) else []
+        by_id = {_learned_identity(entry): dict(entry) for entry in learned_rows if isinstance(entry, Mapping)}
         for snapshot in snapshots:
             quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz)
             entry = {
@@ -91,6 +93,8 @@ class Observe:
             else:
                 model_entries = ((key, tx[key]) for key in list(tx) if key.startswith("cd:m:"))
             for key, entry in model_entries:
+                if not isinstance(entry, dict):
+                    continue
                 left = float(entry["until"]) - now
                 if left <= 0:
                     continue

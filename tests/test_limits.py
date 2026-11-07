@@ -725,6 +725,37 @@ def test_corrupt_pending_map_is_replaced():
     assert tx[key]["tat"] - now == pytest.approx(2 * 6)
 
 
+def test_corrupt_quota_and_observe_rows_are_ignored(clock):
+    import threading
+
+    from freeai._observe import Observe
+    from freeai._routing_types import _learned_key, _provider_key
+
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:requests"
+    tx: dict = {key: "corrupt"}
+    quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", limit=10, remaining=8), now, "UTC")
+    assert isinstance(tx[key], dict) and "tat" in tx[key]
+
+    provider = Provider("p", "https://p.example/v1", api_key="k", models=["m"])
+    store = MemoryStore()
+    with store.transaction() as raw:
+        raw[_learned_key(provider.state_id)] = "nope"
+        raw[_provider_key(provider.state_id)] = "bad"
+        raw[f"cd:m:{provider.state_id}|m"] = "bad"
+    observe = Observe(
+        lock=threading.Lock(),
+        store=store,
+        by_name={"p": provider},
+        providers=[provider],
+        clock=lambda: 50.0,
+    )
+    assert observe.status() == {"models": {}, "providers": {}}
+    observe.observe("p", "m", [RateSnapshot("minute", "requests", limit=10, remaining=9)])
+    with store.transaction() as raw:
+        assert isinstance(raw[_learned_key(provider.state_id)], list)
+
+
 def test_unaccepted_reservations_are_shared_between_processes(tmp_path, clock):
     # Process A has sent a request the platform has not counted yet while process B, sharing the
     # store, gets two answers. B must add A's reservation, or it would wipe it from the shared count.
