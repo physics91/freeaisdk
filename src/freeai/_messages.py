@@ -118,6 +118,8 @@ def _normalize_messages(messages: Messages, system: str | None) -> list[Message]
                 raise TypeError(f"messages[{index}] must be a mapping, got {type(message).__name__}")
             result.append(dict(message))
     if system is not None:
+        if not isinstance(system, str):
+            raise TypeError(f"system must be a string, got {type(system).__name__}")
         result.insert(0, {"role": "system", "content": system})
     if not result:
         raise ValueError("messages must not be empty")

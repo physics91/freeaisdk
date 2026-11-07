@@ -17,7 +17,7 @@ from ._routing_types import (
     _model_key,
     _provider_key,
 )
-from .cooldown import cooldown_failures, cooldown_ready_at
+from .cooldown import _cooldown_failure_count, _cooldown_until, cooldown_failures, cooldown_ready_at
 from .limits import Cost, Limit, State, pending_add, pending_drop, quota_charge, quota_ready_at
 from .providers import Provider
 from .types import ModelInfo
@@ -69,13 +69,13 @@ class Admission:
                 provider_entry, model_entries, authoritative = cooldown_by_sid[sid]
                 if authoritative:
                     model_entry = model_entries.get(model.id)
-                    model_ready = float(model_entry["until"]) if model_entry else 0.0
-                    model_failures = int(model_entry["failures"]) if model_entry else 0
+                    model_ready = _cooldown_until(model_entry)
+                    model_failures = _cooldown_failure_count(model_entry)
                 else:
                     model_ready = cooldown_ready_at(tx, model_key)
                     model_failures = cooldown_failures(tx, model_key)
-                provider_ready = float(provider_entry["until"]) if provider_entry else 0.0
-                provider_failures = int(provider_entry["failures"]) if provider_entry else 0
+                provider_ready = _cooldown_until(provider_entry)
+                provider_failures = _cooldown_failure_count(provider_entry)
                 ready = max(model_ready, provider_ready)
                 # Skip learned/limits/cost work while a cooldown already keeps the candidate busy.
                 if ready <= now:

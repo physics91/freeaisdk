@@ -249,6 +249,8 @@ def test_normalize_messages_rejects_non_mapping_items():
 
     with pytest.raises(TypeError, match="messages\\[1\\] must be a mapping"):
         _normalize_messages([{"role": "user", "content": "ok"}, "x"], None)
+    with pytest.raises(TypeError, match="system must be a string"):
+        _normalize_messages("hi", 123)  # type: ignore[arg-type]
     assert _normalize_messages("hi", "sys") == [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "hi"},
