@@ -56,7 +56,8 @@ def retry_hint(
     """
     wall = time.time() if now is None else now
     reset_headers = tuple(reset_headers)
-    for source in (Headers(headers), _embedded_headers(error)):
+    normalized = headers if isinstance(headers, Headers) else Headers(headers)
+    for source in (normalized, _embedded_headers(error)):
         delay = _header_delay(source, reset_headers, wall)
         if delay is not None:
             return delay

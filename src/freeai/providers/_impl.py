@@ -183,7 +183,7 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
     # -- error classification --------------------------------------------------------------
 
     def classify(self, status: int, headers: Mapping[str, str], body: Any) -> ProviderFailure:
-        headers = Headers(headers)
+        headers = headers if isinstance(headers, Headers) else Headers(headers)
         error = error_object(body)
         code = _effective_status(error, status)
         text = error_text(error)
