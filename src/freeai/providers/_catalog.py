@@ -15,10 +15,29 @@ def _catalog_items(body: Any) -> list[dict[str, Any]]:
 
 
 def _as_int(value: Any) -> int | None:
-    """JSON numbers may arrive as float; bool must not count as an int."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    """JSON numbers may arrive as float or numeric string; bool must not count as an int.
+
+    Accepts ``8192``, ``8192.0``, ``"8192"``, and ``"8192.0"``. Non-integral strings
+    (``"1.5"``) are rejected; non-integral floats still truncate via ``int()``.
+    """
+    if isinstance(value, bool):
         return None
-    return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if not number.is_integer():
+        return None
+    return int(number)
 
 
 def _catalog_model(provider: str, item: dict[str, Any], *, is_router: bool = False) -> ModelInfo:

@@ -215,6 +215,9 @@ def test_catalog_empty_supported_parameters_means_unknown():
 def test_catalog_context_length_accepts_float_rejects_bool():
     assert _catalog_model("p", {"id": "x", "context_length": 128000.0}).context_length == 128000
     assert _catalog_model("p", {"id": "x", "context_window": 8192.0}).context_length == 8192
+    assert _catalog_model("p", {"id": "x", "context_length": "64000"}).context_length == 64000
+    assert _catalog_model("p", {"id": "x", "context_length": "8192.0"}).context_length == 8192
+    assert _catalog_model("p", {"id": "x", "context_length": "1.5"}).context_length is None
     assert _catalog_model("p", {"id": "x", "context_length": True}).context_length is None
 
 
