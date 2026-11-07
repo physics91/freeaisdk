@@ -34,8 +34,10 @@ def rate_snapshots_from_headers(
     """Limit state from ``x-ratelimit-{limit,remaining,reset}-{requests,tokens}[-window]`` headers."""
     found: dict[tuple[Unit, Window], dict[str, float]] = {}
     wall = time.time()
-    for name, value in Headers(headers).items():
-        match = _LIMIT_HEADER_RE.match(name.lower())
+    # Callers often pass an existing httpx.Headers; avoid re-wrapping and re-lowercasing keys.
+    normalized = headers if isinstance(headers, Headers) else Headers(headers)
+    for name, value in normalized.items():
+        match = _LIMIT_HEADER_RE.match(name)
         if not match:
             continue
         kind, unit_name, window_name = match.groups()
