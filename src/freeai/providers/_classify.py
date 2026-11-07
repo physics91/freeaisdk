@@ -30,6 +30,16 @@ _BAD_KEY_RE = re.compile(r"api key not valid|invalid api key|incorrect api key|i
 _NOT_ENTITLED_RE = re.compile(r"data policy|subscription|upgrade your plan|not available (?:on|for) your")
 
 
+def _code_key(code: Any) -> str:
+    """Normalize business/error codes so ``3036.0`` and ``"3036"`` share one lookup key."""
+    parsed = _as_int(code)
+    if parsed is None and isinstance(code, str) and code.isdigit():
+        parsed = int(code)
+    if parsed is not None:
+        return str(parsed)
+    return "" if code is None else str(code)
+
+
 def _effective_status(error: dict[str, Any], status: int) -> int:
     code = error.get("code")
     parsed = _as_int(code)

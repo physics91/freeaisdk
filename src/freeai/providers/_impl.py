@@ -43,6 +43,7 @@ from ._classify import (
     _KIND_BY_STATUS,
     _MONTHLY_RE,
     _NOT_ENTITLED_RE,
+    _code_key,
     _effective_status,
     _message,
 )
@@ -203,7 +204,7 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
         )
 
     def _verdict(self, code: int, headers: Headers, error: dict[str, Any], text: str) -> Verdict:
-        business = self.business_codes.get(str(error.get("code")))
+        business = self.business_codes.get(_code_key(error.get("code")))
         if business is not None:
             return business
         if code == 429:
