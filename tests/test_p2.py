@@ -8,7 +8,7 @@ import threading
 import httpx
 import pytest
 
-from freeai import FailureKind, FreeAI, Provider
+from freeai import FailureKind, FreeAI, OpenRouter, Provider
 from freeai import server as server_module
 from freeai.__main__ import main
 from freeai.aio import AsyncFreeAI
@@ -62,13 +62,11 @@ def test_openai_facade(make_ai, server):
     assert client.models.list()["data"][0]["id"] == f"openrouter:{ALPHA}"
 
 
-def test_async_openai_models_list(make_ai, server):
-    sync = make_ai()
+def test_async_openai_models_list(server, clock):
+    provider = OpenRouter(api_key="sk-test", http_client=server.client(), async_http_client=server.aclient())
 
     async def main() -> dict:
-        client = AsyncOpenAI(
-            AsyncFreeAI(sync.providers, store=sync._router.store, clock=sync._router.clock, max_wait=0)
-        )
+        client = AsyncOpenAI(AsyncFreeAI([provider], clock=clock, max_wait=0))
         try:
             return await client.models.list()
         finally:
