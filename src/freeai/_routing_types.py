@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
-from .limits import Cost, RateSnapshot, State
+from .limits import Cost, RateSnapshot, State, _finite_float
 from .types import Requirements
 
 
@@ -101,21 +100,7 @@ def _covered(*groups: Iterable[RateSnapshot]) -> set[tuple[str, str]]:
 
 def _usage_number(value: Any) -> float | None:
     """Token counts from usage objects; JSON may send floats or numeric strings."""
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, (int, float)):
-        number = float(value)
-        return number if math.isfinite(number) else None
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            number = float(text)
-        except ValueError:
-            return None
-        return number if math.isfinite(number) else None
-    return None
+    return _finite_float(value)
 
 
 def _total_tokens(usage: Mapping[str, Any] | None) -> float | None:

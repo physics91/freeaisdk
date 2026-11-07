@@ -248,15 +248,28 @@ def _quota_state(value: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _quota_number(value: Any) -> float | None:
-    """Numeric quota field; bools, non-numeric strings, and non-finite values are rejected."""
+def _finite_float(value: Any) -> float | None:
+    """Parse a finite float; bools, non-numeric values, and inf/nan are rejected."""
     if isinstance(value, bool) or value is None:
         return None
-    try:
+    if isinstance(value, (int, float)):
         number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
+        return number if math.isfinite(number) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        return number if math.isfinite(number) else None
+    return None
+
+
+def _quota_number(value: Any) -> float | None:
+    """Numeric quota field from the store."""
+    return _finite_float(value)
 
 
 def _reading_order(per: Window, old: dict[str, Any] | None, until: float | None, period: str | None) -> int:
