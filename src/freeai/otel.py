@@ -35,8 +35,10 @@ def attempt_attributes(attempt: Attempt) -> dict[str, AttributeValue]:
         ("completion_tokens", "gen_ai.usage.output_tokens"),
     ):
         value = usage.get(source)
-        if isinstance(value, int) and not isinstance(value, bool):
-            attributes[target] = value
+        # JSON may decode counts as float; bool must not become 0/1 token attributes.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        attributes[target] = int(value)
     if not attempt.ok:
         attributes["error.type"] = str(attempt.kind or "unknown")
         if attempt.scope is not None:

@@ -275,6 +275,13 @@ def test_attempt_attributes_follow_genai_conventions():
     assert attributes["gen_ai.provider.name"] == "groq"
     assert attributes["gen_ai.response.model"] == "m-2026"
     assert (attributes["gen_ai.usage.input_tokens"], attributes["gen_ai.usage.output_tokens"]) == (3, 2)
+    floated = attempt_attributes(
+        Attempt("groq", "m", True, 0.1, usage={"prompt_tokens": 3.0, "completion_tokens": 2.0})
+    )
+    assert (floated["gen_ai.usage.input_tokens"], floated["gen_ai.usage.output_tokens"]) == (3, 2)
+    assert "gen_ai.usage.input_tokens" not in attempt_attributes(
+        Attempt("groq", "m", True, 0.1, usage={"prompt_tokens": True})
+    )
     failed = attempt_attributes(Attempt("p", "m", False, 0.1, kind=FailureKind.RATE_LIMIT, status=429, cooldown=7))
     assert failed["error.type"] == "rate_limit" and failed["http.response.status_code"] == 429
 
