@@ -39,7 +39,8 @@ def _tool_call_items(value: Any) -> tuple[dict[str, Any], ...]:
 
 
 def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool) -> ChatResponse:
-    choices = data.get("choices") or []
+    raw_choices = data.get("choices")
+    choices = raw_choices if isinstance(raw_choices, list) else []
     choice = choices[0] if choices and isinstance(choices[0], dict) else None
     if choice is None or choice.get("finish_reason") == "error":
         raise ProviderFailure(FailureKind.UNAVAILABLE, f"{model.provider}: {model.id} returned an error choice")
@@ -68,7 +69,8 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
 
 
 def to_chunk(model: ModelInfo, event: dict[str, Any]) -> StreamChunk:
-    choices = event.get("choices") or []
+    raw_choices = event.get("choices")
+    choices = raw_choices if isinstance(raw_choices, list) else []
     choice = choices[0] if choices and isinstance(choices[0], dict) else {}
     if choice.get("finish_reason") == "error":
         raise ProviderFailure(FailureKind.UNAVAILABLE, f"{model.provider}: {model.id} stream ended with an error")

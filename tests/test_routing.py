@@ -179,7 +179,9 @@ def test_stream_early_exit_releases_the_slot(clock):
     assert ai.chat("hi").text == "hello"  # the abandoned stream did not keep the only slot
 
 
-@pytest.mark.parametrize("body", [{}, {"choices": []}, {"choices": [None]}, {"choices": ["x"]}])
+@pytest.mark.parametrize(
+    "body", [{}, {"choices": []}, {"choices": [None]}, {"choices": ["x"]}, {"choices": "bad"}, {"choices": 1}]
+)
 def test_to_response_missing_choices_is_unavailable(body):
     model = ModelInfo(provider="p", id="m")
     with pytest.raises(ProviderFailure) as info:
