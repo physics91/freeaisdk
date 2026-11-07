@@ -350,6 +350,7 @@ def test_groq_charges_its_chat_template_too(server, clock):
 
     assert cost(groq) == 10 + 80 + 512  # Groq's reserve without max_tokens is unpredictable (2-961 seen)
     assert cost(groq, max_tokens=100) == 10 + 80 + 100
+    assert cost(groq, max_tokens=0) == 10 + 80  # zero output reserve still needs the chat template
     assert cost(make_provider(server)) == 10 + 512  # other platforms keep the generic estimate
 
     ai.chat(prompt, model=model)  # the fake reports 4 tokens of usage and no limit headers

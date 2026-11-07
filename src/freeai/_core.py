@@ -272,9 +272,11 @@ class Router:
     def cost(self, provider: Provider, request: Request) -> Cost:
         """What a request is charged on this provider's windows until the platform reports usage."""
         cost = request.cost
-        if cost.tokens <= 0 or not provider.prompt_overhead_tokens:
+        overhead = provider.prompt_overhead_tokens
+        if not overhead:
             return cost
-        return Cost(cost.requests, cost.tokens + provider.prompt_overhead_tokens)
+        # Apply even when the estimate is 0 (e.g. ``max_tokens=0``); Groq still burns template tokens.
+        return Cost(cost.requests, cost.tokens + overhead)
 
     def reserve(self, candidates: list[ModelInfo], request: Request) -> tuple[ModelInfo | None, float, Reservation]:
         """Pick the first candidate that is ready now and charge its quota windows.
