@@ -725,6 +725,24 @@ def test_corrupt_pending_map_is_replaced():
     assert tx[key]["tat"] - now == pytest.approx(2 * 6)
 
 
+def test_corrupt_pending_rows_are_skipped():
+    from freeai.limits import _pending_total
+
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:requests"
+    pending_key = "p:" + key
+    tx: dict = {
+        pending_key: {
+            "ok": [3.0, now + 300],
+            "short": [1.0],
+            "text": "nope",
+            "expired": [9.0, now - 1],
+        }
+    }
+    assert _pending_total(tx, key, now) == 3.0
+    assert tx[pending_key] == {"ok": [3.0, now + 300]}
+
+
 def test_corrupt_quota_and_observe_rows_are_ignored(clock):
     import threading
 

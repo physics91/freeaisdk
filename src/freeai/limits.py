@@ -283,18 +283,32 @@ def pending_drop(tx: State, reservation: str, keys: Iterable[str]) -> None:
             del tx[_PENDING_PREFIX + key]
 
 
+def _pending_row(entry: Any) -> list[float] | None:
+    """``[amount, expires_at]`` from the store; skip truncated or non-numeric rows."""
+    if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+        return None
+    try:
+        return [float(entry[0]), float(entry[1])]
+    except (TypeError, ValueError):
+        return None
+
+
 def _pending_total(tx: State, key: str, now: float) -> float:
     store_key = _PENDING_PREFIX + key
     raw = tx.get(store_key)
     entries = dict(raw) if isinstance(raw, dict) else {}
-    live = {rid: entry for rid, entry in entries.items() if float(entry[1]) > now}
-    # Drop expired rows, and replace a corrupt non-dict value left in the store.
+    live: dict[str, list[float]] = {}
+    for rid, entry in entries.items():
+        row = _pending_row(entry)
+        if row is not None and row[1] > now:
+            live[rid] = row
+    # Drop expired/corrupt rows, and replace a corrupt non-dict value left in the store.
     if not isinstance(raw, dict) or len(live) != len(entries):
         if live:
             tx[store_key] = live
         elif store_key in tx:
             del tx[store_key]
-    return sum(max(0.0, float(entry[0])) for entry in live.values())
+    return sum(max(0.0, amount) for amount, _expires in live.values())
 
 
 def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) -> float:
