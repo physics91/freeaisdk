@@ -252,10 +252,16 @@ def _reading_order(per: Window, old: Any, until: float | None, period: str | Non
     return -1 if delta <= -half else 0 if delta < half else 1
 
 
+def _pending_entries(tx: State, key: str) -> dict[str, Any]:
+    """Reservation map for one quota key; replace a corrupt non-dict value with a fresh map."""
+    raw = tx.get(_PENDING_PREFIX + key)
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def pending_add(tx: State, reservation: str, charges: Iterable[tuple[str, float]], expires_at: float) -> None:
     """Record charges of a request the platform has not accepted yet (until ``expires_at``)."""
     for key, amount in charges:
-        entries = dict(tx.get(_PENDING_PREFIX + key) or {})
+        entries = _pending_entries(tx, key)
         entries[reservation] = [amount, expires_at]
         tx[_PENDING_PREFIX + key] = entries
 
@@ -263,7 +269,7 @@ def pending_add(tx: State, reservation: str, charges: Iterable[tuple[str, float]
 def pending_drop(tx: State, reservation: str, keys: Iterable[str]) -> None:
     """Forget a reservation: the platform accepted the request, or it is over."""
     for key in keys:
-        entries = dict(tx.get(_PENDING_PREFIX + key) or {})
+        entries = _pending_entries(tx, key)
         if entries.pop(reservation, None) is None:
             continue
         if entries:
@@ -273,13 +279,16 @@ def pending_drop(tx: State, reservation: str, keys: Iterable[str]) -> None:
 
 
 def _pending_total(tx: State, key: str, now: float) -> float:
-    entries = tx.get(_PENDING_PREFIX + key) or {}
+    store_key = _PENDING_PREFIX + key
+    raw = tx.get(store_key)
+    entries = dict(raw) if isinstance(raw, dict) else {}
     live = {rid: entry for rid, entry in entries.items() if float(entry[1]) > now}
-    if len(live) != len(entries):  # a process died before handing these back
+    # Drop expired rows, and replace a corrupt non-dict value left in the store.
+    if not isinstance(raw, dict) or len(live) != len(entries):
         if live:
-            tx[_PENDING_PREFIX + key] = live
-        else:
-            del tx[_PENDING_PREFIX + key]
+            tx[store_key] = live
+        elif store_key in tx:
+            del tx[store_key]
     return sum(max(0.0, float(entry[0])) for entry in live.values())
 
 

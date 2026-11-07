@@ -427,7 +427,11 @@ def test_compiled_globs_match_fnmatchcase():
     ]
     for model in models:
         expected = next(
-            (i for i, pattern in enumerate(patterns) if fnmatch.fnmatchcase(model.key, pattern) or fnmatch.fnmatchcase(model.id, pattern)),
+            (
+                i
+                for i, pattern in enumerate(patterns)
+                if fnmatch.fnmatchcase(model.key, pattern) or fnmatch.fnmatchcase(model.id, pattern)
+            ),
             len(patterns),
         )
         assert _rank(model, patterns) == expected
@@ -705,6 +709,20 @@ def test_reservations_of_a_dead_process_expire():
     quota_observe(tx, "p", "m", snapshot, now + 301, "UTC")
     assert tx[key]["tat"] - (now + 301) == pytest.approx(2 * 6)
     assert "p:" + key not in tx  # pruned
+
+
+def test_corrupt_pending_map_is_replaced():
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:requests"
+    pending_key = "p:" + key
+    tx: dict = {pending_key: ["not", "a", "map"]}
+    pending_add(tx, "r1", [(key, 2.0)], expires_at=now + 300)
+    assert tx[pending_key] == {"r1": [2.0, now + 300]}
+    tx[pending_key] = "corrupt"
+    snapshot = RateSnapshot("minute", "requests", limit=10, remaining=8)
+    quota_observe(tx, "p", "m", snapshot, now, "UTC")
+    assert pending_key not in tx
+    assert tx[key]["tat"] - now == pytest.approx(2 * 6)
 
 
 def test_unaccepted_reservations_are_shared_between_processes(tmp_path, clock):
