@@ -73,8 +73,10 @@ class OpenRouter(Provider):
         if not isinstance(item.get("id"), str):
             return None
         model_id: str = item["id"]
-        architecture = item.get("architecture") or {}
-        if set(architecture.get("output_modalities") or ["text"]) != {"text"}:
+        raw_architecture = item.get("architecture")
+        architecture = raw_architecture if isinstance(raw_architecture, dict) else {}
+        modalities = architecture.get("output_modalities")
+        if set(modalities if isinstance(modalities, list) and modalities else ["text"]) != {"text"}:
             return None  # audio/image generators are not chat models
         expires = item.get("expiration_date")
         if isinstance(expires, str) and expires < today:

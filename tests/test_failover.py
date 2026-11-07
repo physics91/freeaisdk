@@ -349,6 +349,20 @@ def test_openrouter_provider_field_ignores_non_dict():
     assert merged["provider"] == {"order": ["a"], "data_collection": "deny"}
 
 
+def test_openrouter_free_model_tolerates_bad_architecture():
+    from freeai.providers.openrouter import OpenRouter
+
+    router = OpenRouter(api_key="k")
+    priced = {"prompt": "0", "completion": "0"}
+    assert router._free_model({"id": "x:free", "pricing": priced, "architecture": "bad"}, "2099-01-01") is not None
+    assert (
+        router._free_model(
+            {"id": "x:free", "pricing": priced, "architecture": {"output_modalities": ["audio"]}}, "2099-01-01"
+        )
+        is None
+    )
+
+
 def test_from_env_enables_only_free_tiers(monkeypatch):
     for preset in PRESETS.values():
         for name in preset.env:
