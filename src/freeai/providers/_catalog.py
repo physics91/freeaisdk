@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from ..types import ModelInfo
@@ -19,10 +20,13 @@ def _as_int(value: Any) -> int | None:
 
     Accepts ``8192``, ``8192.0``, ``"8192"``, and ``"8192.0"``. Non-integral strings
     (``"1.5"``) are rejected; non-integral floats still truncate via ``int()``.
+    Non-finite floats (``inf``/``nan``) are rejected.
     """
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return None
         return int(value)
     if not isinstance(value, str):
         return None
@@ -35,7 +39,7 @@ def _as_int(value: Any) -> int | None:
         number = float(text)
     except ValueError:
         return None
-    if not number.is_integer():
+    if not math.isfinite(number) or not number.is_integer():
         return None
     return int(number)
 
