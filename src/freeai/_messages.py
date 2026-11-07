@@ -112,7 +112,11 @@ def _normalize_messages(messages: Messages, system: str | None) -> list[Message]
     if isinstance(messages, str):
         result: list[Message] = [{"role": "user", "content": messages}]
     else:
-        result = [dict(m) for m in messages]
+        result = []
+        for index, message in enumerate(messages):
+            if not isinstance(message, Mapping):
+                raise TypeError(f"messages[{index}] must be a mapping, got {type(message).__name__}")
+            result.append(dict(message))
     if system is not None:
         result.insert(0, {"role": "system", "content": system})
     if not result:

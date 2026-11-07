@@ -244,6 +244,17 @@ def test_content_text_ignores_null_and_non_str_parts():
     assert content_text("plain") == "plain"
 
 
+def test_normalize_messages_rejects_non_mapping_items():
+    from freeai._messages import _normalize_messages
+
+    with pytest.raises(TypeError, match="messages\\[1\\] must be a mapping"):
+        _normalize_messages([{"role": "user", "content": "ok"}, "x"], None)
+    assert _normalize_messages("hi", "sys") == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
 def test_estimate_tokens_skips_null_text_parts():
     payload = {"messages": [{"role": "user", "content": [{"type": "text", "text": None}]}]}
     # Default output reserve only; null text must not become len("None").
