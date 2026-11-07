@@ -176,6 +176,15 @@ class _ClientBase:
                 pools[provider.name] = result
         return pools
 
+    def _plan_after_pools(
+        self, request: Request, pools: dict[str, Sequence[ModelInfo]], max_attempts: int | None, deadline: float | None
+    ) -> tuple[Plan, Sequence[Provider]]:
+        """Order candidates and build a plan; return warmups still needed for ``plan.providers``."""
+        router = self._router
+        ordered = router.order(request, pools, turn=router.next_turn())
+        plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
+        return plan, router.claim_warmups(plan.providers)
+
 
 class FreeAI(_ClientBase):
     """Chat with whichever free model is currently available.
@@ -359,9 +368,8 @@ class FreeAI(_ClientBase):
             )
         else:
             pools = self._pools()
-        ordered = router.order(request, pools, turn=router.next_turn())
-        plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
-        self._observe_warmups(router.claim_warmups(plan.providers))
+        plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline)
+        self._observe_warmups(warmups)
         return plan
 
     def _observe_warmups(self, warmups: Sequence[Provider]) -> None:

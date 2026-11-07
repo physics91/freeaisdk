@@ -213,9 +213,8 @@ class AsyncFreeAI(_ClientBase):
             )
         else:
             pools = await self._pools()
-        ordered = router.order(request, pools, turn=router.next_turn())
-        plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
-        await self._observe_warmups(router.claim_warmups(plan.providers))
+        plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline)
+        await self._observe_warmups(warmups)
         return plan
 
     async def _observe_warmups(self, warmups: Sequence[Provider]) -> None:
