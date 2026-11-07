@@ -134,7 +134,10 @@ class Admission:
                 continue
             if entry.get("model") not in (None, model_id):
                 continue
-            observed = Limit(float(entry["amount"]), entry["per"], entry["unit"], entry["scope"], source="observed")
+            try:
+                observed = Limit(float(entry["amount"]), entry["per"], entry["unit"], entry["scope"], source="observed")
+            except (KeyError, TypeError, ValueError):
+                continue
             key = observed.key(sid, model_id)
             if key not in keys:
                 limits.append(observed)

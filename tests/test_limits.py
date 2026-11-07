@@ -743,7 +743,7 @@ def test_corrupt_pending_rows_are_skipped():
     assert tx[pending_key] == {"ok": [3.0, now + 300]}
 
 
-def test_corrupt_quota_and_observe_rows_are_ignored(clock):
+def test_corrupt_quota_and_observe_rows_are_ignored():
     import threading
 
     from freeai._observe import Observe
@@ -772,6 +772,13 @@ def test_corrupt_quota_and_observe_rows_are_ignored(clock):
     observe.observe("p", "m", [RateSnapshot("minute", "requests", limit=10, remaining=9)])
     with store.transaction() as raw:
         assert isinstance(raw[_learned_key(provider.state_id)], list)
+
+    with store.transaction() as raw:
+        raw[_learned_key(provider.state_id)] = [{"per": "minute"}]
+    observe.observe("p", "m", [RateSnapshot("hour", "tokens", limit=100, remaining=50)])
+    with store.transaction() as raw:
+        rows = raw[_learned_key(provider.state_id)]
+        assert all("unit" in row and "amount" in row for row in rows)
 
 
 def test_unaccepted_reservations_are_shared_between_processes(tmp_path, clock):

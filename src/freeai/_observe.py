@@ -59,7 +59,13 @@ class Observe:
         now = self.clock()
         raw_learned = tx.get(_learned_key(sid), [])
         learned_rows = raw_learned if isinstance(raw_learned, list) else []
-        by_id = {_learned_identity(entry): dict(entry) for entry in learned_rows if isinstance(entry, Mapping)}
+        by_id: dict[tuple[Any, Any, Any, Any], dict[str, Any]] = {}
+        for row in learned_rows:
+            if not isinstance(row, Mapping) or "amount" not in row:
+                continue
+            identity = _learned_identity(row)
+            if identity is not None:
+                by_id[identity] = dict(row)
         for snapshot in snapshots:
             quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz)
             entry = {
@@ -69,7 +75,9 @@ class Observe:
                 "model": model_id if snapshot.scope == "model" else None,
                 "amount": snapshot.limit,
             }
-            by_id[_learned_identity(entry)] = entry
+            identity = _learned_identity(entry)
+            if identity is not None:
+                by_id[identity] = entry
         # Sorted only for stable store bytes; consumers treat the registry as a bag.
         tx[_learned_key(sid)] = [
             by_id[identity] for identity in sorted(by_id, key=lambda item: (*item[:3], item[3] or ""))

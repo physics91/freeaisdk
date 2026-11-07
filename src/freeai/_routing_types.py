@@ -72,9 +72,15 @@ def _learned_key(sid: str) -> str:
     return f"ql:{sid}"
 
 
-def _learned_identity(entry: Mapping[str, Any]) -> tuple[Any, Any, Any, Any]:
-    """Identity of a learned limit row; ``model`` stays ``None`` for provider scope."""
-    return entry["per"], entry["unit"], entry["scope"], entry["model"]
+def _learned_identity(entry: Mapping[str, Any]) -> tuple[Any, Any, Any, Any] | None:
+    """Identity of a learned limit row; ``model`` stays ``None`` for provider scope.
+
+    Incomplete store rows (missing keys) return ``None`` so callers can skip them.
+    """
+    try:
+        return entry["per"], entry["unit"], entry["scope"], entry["model"]
+    except KeyError:
+        return None
 
 
 def _covered(*groups: Iterable[RateSnapshot]) -> set[tuple[str, str]]:
