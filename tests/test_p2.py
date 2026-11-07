@@ -76,7 +76,7 @@ def test_async_openai_models_list(make_ai, server):
 
     listed = asyncio.run(main())
     assert listed["object"] == "list"
-    assert listed["data"][0]["id"] == f"openrouter:{ALPHA}"
+    assert {row["id"] for row in listed["data"]} >= {f"openrouter:{ALPHA}", f"openrouter:{BETA}"}
 
 
 # -- proxy over a real socket ------------------------------------------------------------------
