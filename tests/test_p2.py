@@ -118,6 +118,26 @@ def test_proxy_chat_models_and_stream(proxy, server):
         assert text == "stream"
 
 
+def test_proxy_stream_interrupted_omits_done(proxy, server):
+    failing = {
+        "error": {"code": 502, "message": "provider crashed"},
+        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}],
+    }
+    server.on(ALPHA, sse(delta("partial"), failing))
+    url = proxy().url
+    with httpx.Client(base_url=url, timeout=10) as http:
+        with http.stream(
+            "POST", "/chat/completions", json={"messages": [{"role": "user", "content": "hi"}], "stream": True}
+        ) as response:
+            assert response.status_code == 200
+            lines = [line for line in response.iter_lines() if line.startswith("data: ")]
+    assert lines[-1] != "data: [DONE]"
+    assert all(line != "data: [DONE]" for line in lines)
+    payload = json.loads(lines[-1][6:])
+    assert payload["error"]["type"] == "server_error"
+    assert "interrupted" in payload["error"]["message"].lower() or "crashed" in payload["error"]["message"].lower()
+
+
 def test_proxy_maps_exhaustion_to_429_with_retry_after(proxy, server):
     for model in (ALPHA, BETA, "gamma/three:free", "openrouter/free"):
         server.on(model, error(429, "busy", headers={"Retry-After": "120"}, provider_name="X"))

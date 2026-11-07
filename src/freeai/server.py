@@ -138,7 +138,9 @@ class _Handler(BaseHTTPRequestHandler):
             for chunk in chunks:
                 self._event(chunk_dict(chunk))
         except StreamInterrupted as exc:
+            # Error ends the stream; do not send [DONE] or clients may treat partial output as success.
             self._event({"error": {"message": self.server.redact(str(exc)), "type": "server_error"}})
+            return
         except (BrokenPipeError, ConnectionResetError):
             if hasattr(chunks, "close"):
                 chunks.close()  # client went away: release the model's slot
