@@ -91,6 +91,7 @@ class SQLiteStore:
     def __init__(self, path: str | Path, *, timeout: float = 5.0) -> None:
         self.path = str(path)
         self._timeout = timeout
+        self._closed = False
         self._local = threading.local()
         self._connections: list[sqlite3.Connection] = []
         self._guard = threading.Lock()
@@ -99,6 +100,8 @@ class SQLiteStore:
         conn.execute("CREATE TABLE IF NOT EXISTS freeai_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
 
     def _conn(self) -> sqlite3.Connection:
+        if self._closed:
+            raise RuntimeError(f"SQLiteStore is closed: {self.path}")
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
         if conn is None:
             # Only this thread uses the connection; close() may run on another one.
@@ -106,6 +109,9 @@ class SQLiteStore:
             conn.execute("PRAGMA synchronous=NORMAL")
             self._local.conn = conn
             with self._guard:
+                if self._closed:
+                    conn.close()
+                    raise RuntimeError(f"SQLiteStore is closed: {self.path}")
                 self._connections.append(conn)
         return conn
 
@@ -131,6 +137,7 @@ class SQLiteStore:
 
     def close(self) -> None:
         with self._guard:
+            self._closed = True
             for conn in self._connections:
                 conn.close()
             self._connections.clear()
@@ -156,7 +163,15 @@ class _SQLiteView(MutableMapping[str, Any]):
         if row is None:
             self._missing.add(key)
             raise KeyError(key)
-        value = json.loads(row[0])
+        try:
+            value = json.loads(row[0])
+        except json.JSONDecodeError:
+            # Corrupt rows must not crash routing; drop them like a missing key.
+            self._cache.pop(key, None)
+            self._dirty.discard(key)
+            self._deleted.add(key)
+            self._missing.add(key)
+            raise KeyError(key) from None
         self._cache[key] = value
         return value
 
@@ -204,7 +219,11 @@ class _SQLiteView(MutableMapping[str, Any]):
                 continue
             stored.add(key)
             if key not in self._cache:
-                self._cache[key] = json.loads(raw)
+                try:
+                    self._cache[key] = json.loads(raw)
+                except json.JSONDecodeError:
+                    self._deleted.add(key)
+                    continue
         keys = self._prefix_overlay(prefix, stored)
         return iter((key, self._cache[key]) for key in keys)
 

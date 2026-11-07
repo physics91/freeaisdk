@@ -898,3 +898,38 @@ def test_provider_http_clients_allow_many_concurrent_streams():
     for client in (provider._client(), provider._async_client()):
         pool = client._transport._pool  # type: ignore[attr-defined]
         assert (pool._max_connections, pool._max_keepalive_connections) == (1000, 100)
+
+
+def test_sqlite_corrupt_json_row_raises_keyerror_and_is_deleted(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "corrupt.db"
+    store = SQLiteStore(path)
+    store.close()
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE IF NOT EXISTS freeai_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT INTO freeai_state (key, value) VALUES (?, ?)", ("bad", "{not-json"))
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStore(path)
+    with store.transaction() as tx:
+        with pytest.raises(KeyError):
+            _ = tx["bad"]
+        tx["ok"] = {"n": 1}
+    with store.transaction() as tx:
+        assert "bad" not in tx
+        assert tx["ok"] == {"n": 1}
+    store.close()
+
+
+def test_sqlite_store_stays_closed_after_close(tmp_path):
+    store = SQLiteStore(tmp_path / "closed.db")
+    with store.transaction() as tx:
+        tx["a"] = 1
+    store.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        store.version()
+    with pytest.raises(RuntimeError, match="closed"):
+        with store.transaction():
+            pass
