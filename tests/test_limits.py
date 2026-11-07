@@ -354,6 +354,30 @@ def test_same_window_token_until_does_not_move_backward():
     assert quota_ready_at(tx, [tpd(1000)], "p", "m", Cost(0, 500), now, "UTC") > now
 
 
+def test_month_readings_keep_seen_across_short_until_drift():
+    """Month half-window is weeks, so a 2-day until drift is still the same calendar month."""
+    tx: dict = {}
+    now = 1_000_000.0
+    key = quota_observe(
+        tx,
+        "p",
+        "*",
+        RateSnapshot("month", "requests", 1000, 10, scope="provider", reset_in=20 * 86400),
+        now,
+        "UTC",
+    ).key("p", "*")
+    assert tx[key]["seen"] == 990
+    quota_observe(
+        tx,
+        "p",
+        "*",
+        RateSnapshot("month", "requests", 1000, 900, scope="provider", reset_in=20 * 86400 + 2 * 86400),
+        now + 10,
+        "UTC",
+    )
+    assert tx[key]["seen"] == 990
+
+
 def test_groq_charges_its_chat_template_too(server, clock):
     groq = Groq(api_key="k", http_client=server.client())
     model = groq.list_models()[0].id

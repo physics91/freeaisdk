@@ -41,6 +41,9 @@ LimitScope = Literal["model", "provider"]
 State = MutableMapping[str, Any]
 
 _WINDOW_SECONDS = {"minute": 60.0, "hour": 3600.0, "day": 86400.0}
+# Half-window used only by :func:`_reading_order` to tell same-window drift from a successor.
+# Includes ``month`` (absent from ``_WINDOW_SECONDS``, which is for GCRA intervals only).
+_READING_HALF = {"minute": 30.0, "hour": 1800.0, "day": 43200.0, "month": 15 * 86400.0}
 # Minute and hour windows refill continuously (GCRA) and day and month windows reset at a boundary,
 # unless the platform's headers say otherwise (Groq's daily window refills, OVHcloud's minute resets).
 _ROLLING_BY_DEFAULT = frozenset({"minute", "hour"})
@@ -290,7 +293,7 @@ def _reading_order(per: Window, old: dict[str, Any] | None, until: float | None,
     old_until = _quota_number(old.get("until")) if "until" in old else None
     if until is None or old_until is None:
         return 0 if until is None and old_until is None else 1
-    half = _WINDOW_SECONDS.get(per, _WINDOW_SECONDS["day"]) / 2
+    half = _READING_HALF[per]
     delta = until - old_until
     return -1 if delta <= -half else 0 if delta < half else 1
 
