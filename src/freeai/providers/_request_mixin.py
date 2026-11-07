@@ -160,12 +160,17 @@ class RequestMixin:
         if not isinstance(body, dict) or error_object(body) or not body.get("choices"):
             raise self.classify(200, headers, body)
         choice = body["choices"][0] if isinstance(body["choices"][0], dict) else {}
+        message = choice.get("message")
+        if isinstance(message, dict):
+            delta: dict[str, Any] = message
+        elif isinstance(message, str):
+            delta = {"content": message}
+        else:
+            delta = {}
         yield {
             "model": body.get("model"),
             "usage": body.get("usage"),
-            "choices": [
-                {"index": 0, "delta": choice.get("message") or {}, "finish_reason": choice.get("finish_reason")}
-            ],
+            "choices": [{"index": 0, "delta": delta, "finish_reason": choice.get("finish_reason")}],
         }
 
     def _transport_failure(self, exc: Exception) -> ProviderFailure:

@@ -214,6 +214,17 @@ def test_non_dict_message_or_delta_is_empty():
     assert chunk.text == "" and chunk.tool_calls == ()
 
 
+def test_json_as_stream_string_message_becomes_content():
+    from freeai._http import Headers
+
+    provider = Provider("p", "https://example/v1", api_key="k", models=["m"])
+    events = list(
+        provider._json_as_stream(Headers(), {"model": "m", "choices": [{"message": "hello", "finish_reason": "stop"}]})
+    )
+    assert events[0]["choices"][0]["delta"] == {"content": "hello"}
+    assert to_chunk(ModelInfo(provider="p", id="m"), events[0]).text == "hello"
+
+
 def test_content_text_ignores_null_and_non_str_parts():
     assert content_text([{"type": "text", "text": None}, {"type": "text", "text": "hi"}]) == "hi"
     assert content_text([{"type": "text", "text": 1}]) == ""
@@ -245,10 +256,13 @@ def test_prepare_coerces_string_token_limits():
     both = prepare.prepare("hi", None, None, (), None, {"max_tokens": "1", "max_completion_tokens": "2.0"})
     assert both.payload["max_tokens"] == 1
     assert both.payload["max_completion_tokens"] == 2
-    sampled = prepare.prepare("hi", None, None, (), None, {"temperature": "0.2", "top_p": "0.9", "top_k": "40"})
+    sampled = prepare.prepare(
+        "hi", None, None, (), None, {"temperature": "0.2", "top_p": "0.9", "top_k": "40", "seed": "7"}
+    )
     assert sampled.payload["temperature"] == 0.2
     assert sampled.payload["top_p"] == 0.9
     assert sampled.payload["top_k"] == 40
+    assert sampled.payload["seed"] == 7
 
 
 def test_catalog_empty_supported_parameters_means_unknown():

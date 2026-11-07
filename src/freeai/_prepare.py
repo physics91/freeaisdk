@@ -35,7 +35,7 @@ _RESERVED_PARAMS = {"messages", "stream", "models"}
 # Only choices[0] is read, so extra choices would just burn quota (and Groq/Cerebras reject n != 1).
 _STRIPPED_PARAMS = {"n"}
 _FLOAT_PARAMS = ("temperature", "top_p", "frequency_penalty", "presence_penalty")
-_INT_PARAMS = ("max_tokens", "max_completion_tokens", "top_k")
+_INT_PARAMS = ("max_tokens", "max_completion_tokens", "top_k", "seed")
 
 
 def _coerce_numeric_params(params: dict[str, Any]) -> dict[str, Any]:
