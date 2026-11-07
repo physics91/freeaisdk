@@ -140,7 +140,13 @@ class Admission:
                 continue
             amount = _usage_number(entry.get("amount"))
             per, unit, scope = entry.get("per"), entry.get("unit"), entry.get("scope")
-            if amount is None or per not in _LEARNED_WINDOWS or unit not in _LEARNED_UNITS or scope not in _LEARNED_SCOPES:
+            if (
+                amount is None
+                or amount <= 0
+                or per not in _LEARNED_WINDOWS
+                or unit not in _LEARNED_UNITS
+                or scope not in _LEARNED_SCOPES
+            ):
                 continue
             observed = Limit(amount, per, unit, scope, source="observed")
             key = observed.key(sid, model_id)
