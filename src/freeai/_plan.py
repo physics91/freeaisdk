@@ -104,7 +104,7 @@ class Plan:
         """Seconds until the deadline, used as the per-attempt HTTP timeout."""
         if self.deadline_at is None:
             return None
-        return max(0.1, self.deadline_at - self.router.clock())
+        return max(0.0, self.deadline_at - self.router.clock())
 
     def admitted(self, snapshots: Iterable[RateSnapshot]) -> None:
         """The platform accepted the active attempt: its stream headers arrived.

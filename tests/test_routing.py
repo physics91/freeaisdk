@@ -183,6 +183,29 @@ def test_deadline_bounds_waiting_and_http_timeout(clock):
     assert clock.sleeps == []  # a 20 s wait cannot fit a 10 s deadline
 
 
+def test_deadline_leftover_under_one_tenth_second_is_honored(clock):
+    timeouts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions.get("timeout"))
+        return error(429, "slow", headers={"Retry-After": "20"})
+
+    provider = Provider(
+        "p",
+        "https://p.example/v1",
+        api_key="k",
+        models=["m1"],
+        timeout=30,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    ai = make(clock, provider, max_wait=60)
+    clock.now = 0.0
+    with pytest.raises(ExhaustedError):
+        ai.chat("hi", deadline=0.05)
+    assert timeouts[0]["read"] == pytest.approx(0.05)
+    assert timeouts[0]["read"] < 0.1
+
+
 def test_first_token_timeout_counts_only_data_events():
     fake = FakeClock()
     provider = Provider("p", "https://p.example")
