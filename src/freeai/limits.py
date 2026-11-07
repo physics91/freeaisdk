@@ -199,8 +199,12 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
     never hand requests back, so a request count read lower than one already applied is a late
     reading and is ignored. Token counts can drop for real (unused output handed back), so for
     them only readings of a window that has already ended are ignored.
+
+    Non-positive or non-finite ``snapshot.limit`` values are ignored (store unchanged).
     """
     limit = Limit(snapshot.limit, snapshot.per, snapshot.unit, snapshot.scope, source="response headers")
+    if not math.isfinite(snapshot.limit) or snapshot.limit <= 0:
+        return limit
     key = limit.key(provider, model_id)
     seen = max(0.0, snapshot.limit - snapshot.remaining)
     requests = limit.unit == "requests"

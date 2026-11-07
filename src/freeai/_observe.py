@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -67,6 +68,10 @@ class Observe:
             if identity is not None:
                 by_id[identity] = dict(row)
         for snapshot in snapshots:
+            if not isinstance(snapshot.limit, (int, float)) or isinstance(snapshot.limit, bool):
+                continue
+            if snapshot.limit <= 0:
+                continue
             quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz)
             entry = {
                 "per": snapshot.per,
