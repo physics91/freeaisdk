@@ -127,12 +127,28 @@ class Plan:
         router.changed()
 
     def release(self, model: ModelInfo) -> None:
-        """The attempt ended without an outcome (e.g. the caller stopped reading or was cancelled)."""
+        """The attempt ended without an outcome (e.g. the caller stopped reading or was cancelled).
+
+        If the platform never accepted the attempt (pending reservation still held), undo the local
+        quota charge. After :meth:`admitted`, the platform counted the request so charges stay.
+        """
         detached, reservation = self._detach(model)
         if not detached:
             return
-        self.router._drop_pending(reservation)
-        self.router.changed()
+        router = self.router
+        if reservation.keys:
+            provider = router.provider(model)
+            sid = provider.state_id
+            cost = router.cost(provider, self.request)
+            with router._lock, router.store.transaction() as tx:
+                pending_drop(tx, reservation.id, reservation.keys)
+                now = router.clock()
+                limits = router._limits(tx, provider, model.id)
+                if cost.tokens:
+                    quota_adjust(tx, limits, sid, model.id, "tokens", -cost.tokens, now, provider.reset_tz)
+                if cost.requests:
+                    quota_adjust(tx, limits, sid, model.id, "requests", -cost.requests, now, provider.reset_tz)
+        router.changed()
 
     def _detach(self, model: ModelInfo) -> tuple[bool, Reservation]:
         """Clear the active attempt and concurrency slot; return any reservation still to drop."""
@@ -177,11 +193,16 @@ class Plan:
                     )
                 else:
                     cooldown = 0.0
-                # Refused requests consume no tokens: give the estimate back (requests stay charged).
+                # Tokens: settle to actual usage (0 when the server never answered).
+                # Requests: stay charged once the platform may have counted them; undo only when the
+                # attempt never reached the platform (transport failure before any HTTP response).
+                cost = router.cost(provider, self.request)
                 used = _total_tokens(usage)
-                delta = (used if used is not None else 0.0) - router.cost(provider, self.request).tokens
+                delta = (used if used is not None else 0.0) - cost.tokens
                 limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
                 quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+                if not failure.reached and reservation.keys and cost.requests:
+                    quota_adjust(tx, limits, sid, model.id, "requests", -cost.requests, now, provider.reset_tz)
                 router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots])
                 if failure.scope is not Scope.REQUEST:
                     router.health.record(model.key, False, now - started)

@@ -13,6 +13,7 @@ from freeai._plan import Plan
 from freeai._routing_types import _total_tokens
 from freeai._sse import EventReader
 from freeai.health import HealthStats
+from freeai.limits import rpm
 from freeai.providers._catalog import _catalog_model
 from freeai.types import Requirements
 
@@ -177,6 +178,73 @@ def test_stream_early_exit_releases_the_slot(clock):
         break
     gc.collect()
     assert ai.chat("hi").text == "hello"  # the abandoned stream did not keep the only slot
+
+
+def test_transport_failure_refunds_request_quota(clock):
+    n = {"n": 0}
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith(("/models", "/models/user")):
+            return httpx.Response(200, json={"data": []})
+        n["n"] += 1
+        if n["n"] == 1:
+            raise httpx.ConnectError("boom")
+        return ok()
+
+    ai = make(
+        clock,
+        Provider(
+            "p",
+            "https://p.example/v1",
+            api_key="k",
+            models=["m1"],
+            limits=[rpm(1)],
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        ),
+    )
+    with pytest.raises(ExhaustedError):
+        ai.chat("hi")
+    clock.now += 16  # past UNAVAILABLE cooldown; request charge must not still block
+    assert ai.chat("hi").text == "hello"
+    assert n["n"] == 2
+
+
+def test_http_error_keeps_request_quota_after_cooldown(clock):
+    server = FakeServer()
+    server.on("m1", error(503, "busy"), ok())
+    ai = make(clock, plain(server, models=["m1"], limits=[rpm(1)]))
+    with pytest.raises(ExhaustedError):
+        ai.chat("hi")
+    clock.now += 16
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi")
+    assert info.value.next_available_in == pytest.approx(45.0)  # rpm TAT still held
+    assert server.models_called == ["m1"]
+
+
+def test_empty_completion_keeps_request_quota(clock):
+    server = FakeServer()
+    server.on("m1", ok(""), ok(text="later"))
+    ai = make(clock, plain(server, models=["m1"], limits=[rpm(1)]))
+    with pytest.raises(ExhaustedError):
+        ai.chat("hi")
+    clock.now += 6  # past EMPTY cooldown; rpm charge must still block
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi")
+    assert info.value.next_available_in == pytest.approx(55.0)
+    assert server.models_called == ["m1"]
+
+
+def test_stream_abandon_after_output_keeps_request_quota(clock):
+    server = FakeServer()
+    server.on("m1", sse({"model": "x", "choices": [{"index": 0, "delta": {"content": "a"}}]}), ok())
+    ai = make(clock, plain(server, models=["m1"], limits=[rpm(1)]))
+    it = ai.stream("hi")
+    assert next(it).text == "a"
+    it.close()
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi")
+    assert info.value.next_available_in == pytest.approx(61.0)
 
 
 @pytest.mark.parametrize(

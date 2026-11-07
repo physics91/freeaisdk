@@ -89,6 +89,7 @@ class ProviderFailure(FreeAIError):
         retry_after: float | None = None,
         scope: Scope | None = None,
         snapshots: list[RateSnapshot] | None = None,
+        reached: bool = True,
     ) -> None:
         super().__init__(message)
         self.kind = kind
@@ -97,6 +98,8 @@ class ProviderFailure(FreeAIError):
         self.retry_after = retry_after
         self.scope = scope or DEFAULT_SCOPE[kind]
         self.snapshots = snapshots or []  # limit state reported alongside the failure
+        # False for transport failures before any HTTP response; local request quota is refundable.
+        self.reached = reached
 
 
 class ExhaustedError(FreeAIError):
