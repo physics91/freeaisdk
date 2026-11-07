@@ -167,6 +167,17 @@ def test_stream_keeps_wire_served_model_across_model_less_events(make_ai, server
     assert seen[-1].served_model == "real/served:free"
 
 
+def test_empty_string_wire_model_does_not_poison_sticky(make_ai, server):
+    server.on(
+        ALPHA,
+        sse(
+            {"model": "", "choices": [{"index": 0, "delta": {"content": "a"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "b"}, "finish_reason": "stop"}]},
+        ),
+    )
+    assert [c.model for c in make_ai().stream("hi")] == [ALPHA, ALPHA]
+
+
 def test_stream_validates_arguments_eagerly(make_ai):
     with pytest.raises(TypeError):
         make_ai().stream("hi", stream=True)

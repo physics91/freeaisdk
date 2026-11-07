@@ -459,7 +459,8 @@ class FreeAI(_ClientBase):
                 with closing(events):
                     for event in events:
                         chunk = to_chunk(target, event)
-                        wire_model = event.get("model") if isinstance(event.get("model"), str) else None
+                        raw_model = event.get("model")
+                        wire_model = raw_model if isinstance(raw_model, str) and raw_model else None
                         if chunk.usage is not None:
                             usage = chunk.usage
                         if chunk.finish_reason is not None:
