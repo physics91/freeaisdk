@@ -126,6 +126,9 @@ def _estimate_tokens(payload: Mapping[str, Any]) -> float:
             chars += len(json.dumps(message["tool_calls"], default=str))
     if payload.get("tools"):
         chars += len(json.dumps(payload["tools"], default=str))
-    output = payload.get("max_completion_tokens") or payload.get("max_tokens") or _DEFAULT_OUTPUT_TOKENS
-    output = output if isinstance(output, (int, float)) and not isinstance(output, bool) else _DEFAULT_OUTPUT_TOKENS
+    # ``0`` is a valid reserve (falsy); only a missing key falls back to the default.
+    if (output := payload.get("max_completion_tokens")) is None:
+        output = payload.get("max_tokens")
+    if output is None or not isinstance(output, (int, float)) or isinstance(output, bool):
+        output = _DEFAULT_OUTPUT_TOKENS
     return float(chars // _CHARS_PER_TOKEN + attachments * _TOKENS_PER_ATTACHMENT + output)

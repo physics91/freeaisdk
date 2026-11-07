@@ -195,6 +195,13 @@ def test_estimate_tokens_skips_null_text_parts():
     assert _estimate_tokens(payload) == float(512)
 
 
+def test_estimate_tokens_honors_zero_max_tokens():
+    base = {"messages": [{"role": "user", "content": "hi"}]}
+    assert _estimate_tokens({**base, "max_tokens": 0}) == 0.0
+    assert _estimate_tokens({**base, "max_completion_tokens": 0}) == 0.0
+    assert _estimate_tokens(base) == float(512)
+
+
 def test_health_latency_seeds_from_first_success_after_failures():
     health = HealthStats(alpha=0.3)
     health.record("m", False, 0.5)
