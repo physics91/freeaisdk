@@ -230,11 +230,3 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
 
 _VERIFIED = "2026-11-06"
 
-# -- helpers -----------------------------------------------------------------------------------
-
-
-def _without(message: Any, key: str) -> Any:
-    if isinstance(message, dict) and key in message:
-        return {k: v for k, v in message.items() if k != key}
-    return message
-

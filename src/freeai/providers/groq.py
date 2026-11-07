@@ -9,9 +9,15 @@ from typing import Any, ClassVar
 from .._http import Headers
 from ..errors import FailureKind, Scope
 from ..limits import RateSnapshot, Window, rpd, rpm, tpd, tpm
-from ._impl import _VERIFIED, Provider, Tier, Verdict, _without
+from ._impl import _VERIFIED, Provider, Tier, Verdict
 
 GROQ_FREE_MODELS = ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b")
+
+
+def _without(message: Any, key: str) -> Any:
+    if isinstance(message, dict) and key in message:
+        return {k: v for k, v in message.items() if k != key}
+    return message
 
 
 class Groq(Provider):
