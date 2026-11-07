@@ -113,14 +113,19 @@ def _body_delay(error: Mapping[str, Any]) -> float | None:
 def _parse_proto_duration(value: Any) -> float | None:
     if isinstance(value, str) and value.endswith("s"):
         try:
-            return max(0.0, float(value[:-1]))
+            number = float(value[:-1])
         except ValueError:
             return None
+        return max(0.0, number) if math.isfinite(number) else None
     if isinstance(value, dict):
+        seconds, nanos = value.get("seconds", 0), value.get("nanos", 0)
+        if isinstance(seconds, bool) or isinstance(nanos, bool):
+            return None
         try:
-            return max(0.0, float(value.get("seconds", 0)) + float(value.get("nanos", 0)) / 1e9)
+            number = float(seconds) + float(nanos) / 1e9
         except (TypeError, ValueError):
             return None
+        return max(0.0, number) if math.isfinite(number) else None
     return None
 
 

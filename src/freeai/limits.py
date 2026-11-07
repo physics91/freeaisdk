@@ -306,9 +306,12 @@ def _pending_row(entry: Any) -> list[float] | None:
     if not isinstance(entry, (list, tuple)) or len(entry) < 2:
         return None
     try:
-        return [float(entry[0]), float(entry[1])]
+        amount, expires = float(entry[0]), float(entry[1])
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(amount) or not math.isfinite(expires):
+        return None
+    return [amount, expires]
 
 
 def _pending_total(tx: State, key: str, now: float) -> float:
