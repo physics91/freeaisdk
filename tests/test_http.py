@@ -253,6 +253,10 @@ def test_cooldown_ignores_corrupt_entries():
     assert cooldown_fail(tx, "cd:p:x", FailureKind.RATE_LIMIT, None, 1.0, CooldownPolicy()) == 30.0
     assert tx["cd:p:x"] == {"until": 31.0, "failures": 1}
     assert cooldown_snapshot(tx, "cd:p:", 0.0) == {"x": 31.0, "y": 100.0}
+    tx["cd:p:z"] = {"until": "nope", "failures": "x"}
+    assert cooldown_ready_at(tx, "cd:p:z") == 0.0
+    assert cooldown_failures(tx, "cd:p:z") == 0
+    assert "z" not in cooldown_snapshot(tx, "cd:p:", 0.0)
 
 
 def test_zone_is_cached():

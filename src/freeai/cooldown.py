@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,23 +72,45 @@ def _cooldown_entry(tx: State, key: str) -> dict[str, Any] | None:
     return entry if isinstance(entry, dict) else None
 
 
+def _cooldown_until(entry: Mapping[str, Any] | None) -> float:
+    if not entry:
+        return 0.0
+    try:
+        value = entry.get("until", 0.0)
+        if isinstance(value, bool):
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _cooldown_failure_count(entry: Mapping[str, Any] | None) -> int:
+    if not entry:
+        return 0
+    try:
+        value = entry.get("failures", 0)
+        if isinstance(value, bool):
+            return 0
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def cooldown_ready_at(tx: State, key: str) -> float:
-    entry = _cooldown_entry(tx, key)
-    return float(entry["until"]) if entry else 0.0
+    return _cooldown_until(_cooldown_entry(tx, key))
 
 
 def cooldown_failures(tx: State, key: str) -> int:
-    entry = _cooldown_entry(tx, key)
-    return int(entry["failures"]) if entry else 0
+    return _cooldown_failure_count(_cooldown_entry(tx, key))
 
 
 def cooldown_fail(
     tx: State, key: str, kind: FailureKind, hint: float | None, now: float, policy: CooldownPolicy
 ) -> float:
     entry = _cooldown_entry(tx, key) or {}
-    failures = int(entry.get("failures", 0)) + 1
+    failures = _cooldown_failure_count(entry) + 1
     cooldown = policy.duration(kind, failures, hint)
-    until = float(entry.get("until", 0.0))
+    until = _cooldown_until(entry)
     if cooldown > 0:
         until = max(until, now + cooldown)
     tx[key] = {"until": until, "failures": failures}
@@ -110,8 +132,11 @@ def cooldown_snapshot(tx: State, prefix: str, now: float) -> dict[str, float]:
             items = ((key, tx[key]) for key in keys_with_prefix(prefix))
         else:
             items = ((key, value) for key, value in tx.items() if key.startswith(prefix))
-    return {
-        key[len(prefix) :]: float(entry["until"]) - now
-        for key, entry in items
-        if isinstance(entry, dict) and float(entry["until"]) > now
-    }
+    out: dict[str, float] = {}
+    for key, entry in items:
+        if not isinstance(entry, dict):
+            continue
+        left = _cooldown_until(entry) - now
+        if left > 0:
+            out[key[len(prefix) :]] = left
+    return out

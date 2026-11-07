@@ -95,7 +95,13 @@ class Observe:
             for key, entry in model_entries:
                 if not isinstance(entry, dict):
                     continue
-                left = float(entry["until"]) - now
+                try:
+                    until = entry.get("until", 0.0)
+                    if isinstance(until, bool):
+                        continue
+                    left = float(until) - now
+                except (TypeError, ValueError):
+                    continue
                 if left <= 0:
                     continue
                 sid, sep, model_id = key.removeprefix("cd:m:").partition("|")
