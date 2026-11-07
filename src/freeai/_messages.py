@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ._routing_types import _usage_number
 from .errors import FailureKind, ProviderFailure
 from .types import ChatResponse, Message, ModelInfo, StreamChunk
 
@@ -139,9 +140,10 @@ def _estimate_tokens(payload: Mapping[str, Any]) -> float:
             chars += len(json.dumps(message["tool_calls"], default=str))
     if payload.get("tools"):
         chars += len(json.dumps(payload["tools"], default=str))
-    # ``0`` is a valid reserve (falsy); only a missing key falls back to the default.
+    # ``0`` is a valid reserve (falsy); only a missing/invalid value falls back to the default.
     if (output := payload.get("max_completion_tokens")) is None:
         output = payload.get("max_tokens")
-    if output is None or not isinstance(output, (int, float)) or isinstance(output, bool):
-        output = _DEFAULT_OUTPUT_TOKENS
-    return float(chars // _CHARS_PER_TOKEN + attachments * _TOKENS_PER_ATTACHMENT + output)
+    parsed = _usage_number(output)
+    if parsed is None:
+        parsed = float(_DEFAULT_OUTPUT_TOKENS)
+    return float(chars // _CHARS_PER_TOKEN + attachments * _TOKENS_PER_ATTACHMENT + parsed)
