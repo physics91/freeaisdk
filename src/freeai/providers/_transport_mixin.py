@@ -78,6 +78,13 @@ class TransportMixin:
         """Per-request timeout narrowed by the remaining deadline and the first-token timeout."""
         if timeout is None and first_token is None:
             return {}
-        total = max(0.1, min(self.timeout, timeout if timeout is not None else math.inf))
-        read = max(0.1, min(total, first_token if first_token is not None else math.inf))
+        # Respect short deadline leftovers; only floor when using the provider default.
+        if timeout is None:
+            total = max(0.1, self.timeout)
+        else:
+            total = min(self.timeout, max(0.0, timeout)) or 1e-6
+        if first_token is None:
+            read = total
+        else:
+            read = min(total, max(0.0, first_token)) or 1e-6
         return {"timeout": Timeout(total, connect=min(total, _CONNECT_TIMEOUT), read=read)}

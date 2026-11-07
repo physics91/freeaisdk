@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from dataclasses import replace
 from typing import Any, Self, Unpack
 
 from ._core import (
@@ -21,6 +22,8 @@ from ._core import (
     RouterOptions,
     Wait,
     empty_stream,
+    output_limit_failure,
+    stream_chunk_answered,
     to_chunk,
 )
 from ._http import logger
@@ -48,6 +51,16 @@ def _read_version(version: Callable[[], int] | None) -> int | None:
         return None
 
 
+class _Waiter:
+    """One sync wait slot; ``alive`` is cleared when the wait ends or a wake claims it."""
+
+    __slots__ = ("event", "alive")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.alive = True
+
+
 class _Wakeups:
     """Requests of this client waiting for quota, grouped by the models they can still use.
 
@@ -60,7 +73,7 @@ class _Wakeups:
     def __init__(self, version: Callable[[], int] | None = None) -> None:
         self._lock = threading.Lock()
         self._changes = 0
-        self._waiting: dict[frozenset[str], deque[threading.Event]] = {}
+        self._waiting: dict[frozenset[str], deque[_Waiter]] = {}
         self._version = version
         self._reported = -math.inf  # when a waiting thread last reported another process's change
 
@@ -71,42 +84,58 @@ class _Wakeups:
     def wake(self) -> None:
         with self._lock:
             self._changes += 1
-            for queue in self._waiting.values():
-                queue.popleft().set()
-            self._waiting = {group: queue for group, queue in self._waiting.items() if queue}
+            for group in list(self._waiting):
+                queue = self._waiting[group]
+                while queue:
+                    waiter = queue.popleft()
+                    if waiter.alive:
+                        waiter.alive = False
+                        waiter.event.set()
+                        break
+                if not queue:
+                    del self._waiting[group]
 
     def wait(self, delay: float, mark: tuple[int, int | None], group: frozenset[str]) -> None:
         """Sleep up to ``delay``; return early when woken, or at once if a change came since ``mark``."""
         changes, version = mark
-        event = threading.Event()
+        waiter = _Waiter()
         with self._lock:
             if self._changes != changes:
                 return
-            self._waiting.setdefault(group, deque()).append(event)
+            self._waiting.setdefault(group, deque()).append(waiter)
+        woken = False
         try:
-            self._sleep(event, delay, version)
+            woken = self._sleep(waiter.event, delay, version)
         finally:
+            forward = False
             with self._lock:
+                claimed = not waiter.alive
+                waiter.alive = False
                 queue = self._waiting.get(group)
-                if queue is not None and event in queue:
-                    queue.remove(event)
+                if queue is not None and waiter in queue:
+                    queue.remove(waiter)
                     if not queue:
                         del self._waiting[group]
+                # Wake took our slot after we timed out: pass the signal to the next peer.
+                forward = claimed and not woken and bool(self._waiting.get(group))
+            if forward:
+                self.wake()
 
-    def _sleep(self, event: threading.Event, delay: float, version: int | None) -> None:
+    def _sleep(self, event: threading.Event, delay: float, version: int | None) -> bool:
+        """Wait up to ``delay``; return whether the event was set (a wake arrived)."""
         deadline = time.monotonic() + delay
         if version is None:
-            event.wait(delay)
-            return
+            return event.wait(delay)
         looked = time.monotonic()
         while True:
             left = deadline - time.monotonic()
-            if left <= 0 or event.wait(min(left, _POLL_SECONDS)):
-                return
+            if left <= 0:
+                return event.is_set()
+            if event.wait(min(left, _POLL_SECONDS)):
+                return True
             current = _read_version(self._version)
             if current is None:  # the store failed: sleep out the rest
-                event.wait(max(0.0, deadline - time.monotonic()))
-                return
+                return event.wait(max(0.0, deadline - time.monotonic()))
             now = time.monotonic()
             if current != version:
                 version = current
@@ -205,6 +234,7 @@ class FreeAI(_ClientBase):
     - ``allow_training=False`` keeps only models that do not train on prompts (OpenRouter is asked
       per request not to collect data).
     - ``reject_response``: ``callable(ChatResponse) -> bool | str``; a truthy result fails over.
+      Exceptions from the hook are treated as a rejection (not a hard abort).
     - ``store``: :class:`~freeai.SQLiteStore` to share cooldowns and quotas between processes. The
       caller owns it: :meth:`close` does not close the store.
     - ``clock``: wall-clock seconds (default :func:`time.time`). State is stored as epoch time so
@@ -282,7 +312,20 @@ class FreeAI(_ClientBase):
                     raise OutputLimitError(failure.message, plan.attempts, raw) from failure
                 continue
             except BaseException:
-                plan.release(target)
+                if completion is not None:
+                    # Platform already answered; keep request quota (do not plan.release-refund).
+                    plan.failed(
+                        target,
+                        ProviderFailure(
+                            FailureKind.REJECTED,
+                            f"{target.provider}: {target.id}: aborted after response",
+                        ),
+                        started,
+                        completion.snapshots,
+                        usage=completion.body.get("usage") if isinstance(completion.body, dict) else None,
+                    )
+                else:
+                    plan.release(target)
                 raise
             plan.succeeded(
                 target, started, snapshots=completion.snapshots, usage=response.usage, served_model=response.model
@@ -403,6 +446,8 @@ class FreeAI(_ClientBase):
             usage: dict[str, Any] | None = None
             served: str | None = None
             delivered = False
+            answered = False
+            finish_reason: str | None = None
             try:
                 events = provider.stream(
                     target.id,
@@ -414,12 +459,24 @@ class FreeAI(_ClientBase):
                 with closing(events):
                     for event in events:
                         chunk = to_chunk(target, event)
+                        raw_model = event.get("model")
+                        wire_model = raw_model if isinstance(raw_model, str) and raw_model else None
                         if chunk.usage is not None:
                             usage = chunk.usage
+                        if chunk.finish_reason is not None:
+                            finish_reason = chunk.finish_reason
+                        if stream_chunk_answered(chunk):
+                            answered = True
                         if not delivered and not chunk.has_output:
                             continue  # role-only preambles: nothing committed to this model yet
                         delivered = True
-                        served = chunk.model
+                        # Sticky wire model: later model-less events must not fall back to the request id.
+                        if wire_model is not None:
+                            served = wire_model
+                        elif served is None:
+                            served = chunk.model
+                        elif chunk.model != served:
+                            chunk = replace(chunk, model=served)
                         emitted.append(chunk.text)
                         yield chunk
             except ProviderFailure as failure:
@@ -431,7 +488,12 @@ class FreeAI(_ClientBase):
             except BaseException:
                 plan.release(target)  # includes GeneratorExit when the caller stops iterating
                 raise
-            if not delivered and router.retry_on_empty:
+            if not answered and finish_reason == "length":
+                failure = output_limit_failure(target)
+                plan.failed(target, failure, started, usage=usage)
+                raise OutputLimitError(failure.message, plan.attempts) from None
+            # Match chat EMPTY: reasoning-only (or other non-answer) streams fail over too.
+            if not answered and router.retry_on_empty:
                 plan.failed(target, empty_stream(target), started, usage=usage)
                 continue
             plan.succeeded(target, started, usage=usage, served_model=served)

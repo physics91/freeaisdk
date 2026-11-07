@@ -18,12 +18,18 @@ _PART_MODALITY = {"image_url": "image", "input_audio": "audio", "file": "file", 
 def _param_active(value: Any) -> bool:
     """True when a request param meaningfully asks for a capability.
 
-    Empty ``tools=[]`` / ``tool_choice=""`` / ``response_format={}`` must not narrow
-    candidates or force OpenRouter ``require_parameters``.
+    Empty ``tools=[]`` / ``tool_choice=""`` / ``response_format={}``, falsy scalars such as
+    ``reasoning=False`` / ``0``, ``tool_choice="none"``, and the OpenAI default
+    ``response_format={"type": "text"}`` must not narrow candidates or force OpenRouter
+    ``require_parameters``.
     """
-    if isinstance(value, (str, list, dict, tuple, set)):
+    if isinstance(value, str) and value.strip().casefold() == "none":
+        return False
+    if isinstance(value, Mapping):
+        if set(value) <= {"type"} and str(value.get("type", "")).casefold() in {"", "text", "none"}:
+            return False
         return bool(value)
-    return value is not None
+    return bool(value)
 
 
 _CHARS_PER_TOKEN = 4  # rough size estimate, refined by ``usage`` after each response
@@ -55,11 +61,7 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
     finish_reason = _response_str(choice.get("finish_reason"))
     if not text.strip() and not _tool_call_items(message.get("tool_calls")):
         if finish_reason == "length":
-            raise ProviderFailure(
-                FailureKind.OUTPUT_LIMIT,
-                f"{model.provider}: {model.id} used the whole max_tokens budget (likely on reasoning) "
-                "before answering; raise max_tokens or lower the reasoning effort",
-            )
+            raise output_limit_failure(model)
         if retry_on_empty:
             raise ProviderFailure(FailureKind.EMPTY, f"{model.provider}: {model.id} returned an empty completion")
     raw_usage = data.get("usage")
@@ -114,6 +116,19 @@ def content_text(content: Any) -> str:
 
 def empty_stream(model: ModelInfo) -> ProviderFailure:
     return ProviderFailure(FailureKind.EMPTY, f"{model.provider}: {model.id} streamed no output")
+
+
+def output_limit_failure(model: ModelInfo) -> ProviderFailure:
+    return ProviderFailure(
+        FailureKind.OUTPUT_LIMIT,
+        f"{model.provider}: {model.id} used the whole max_tokens budget (likely on reasoning) "
+        "before answering; raise max_tokens or lower the reasoning effort",
+    )
+
+
+def stream_chunk_answered(chunk: StreamChunk) -> bool:
+    """True when the chunk carries a user-visible answer (text or tool calls), not reasoning alone."""
+    return bool(chunk.text.strip() or chunk.tool_calls)
 
 
 def _normalize_messages(messages: Messages, system: str | None) -> list[Message]:

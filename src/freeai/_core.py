@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal, TypedDict
 
 from ._admission import Admission
-from ._messages import Messages, empty_stream, to_chunk, to_response
+from ._messages import Messages, empty_stream, output_limit_failure, stream_chunk_answered, to_chunk, to_response
 from ._observe import Observe
 from ._order import OrderPolicy
 from ._order import _rank as _rank  # re-export for ``from freeai._core import _rank``
@@ -50,6 +50,8 @@ __all__ = [
     "RouterOptions",
     "Wait",
     "empty_stream",
+    "output_limit_failure",
+    "stream_chunk_answered",
     "to_chunk",
     "to_response",
 ]
@@ -317,7 +319,15 @@ class Router:
     def to_response(self, model: ModelInfo, data: dict[str, Any]) -> ChatResponse:
         response = to_response(model, data, retry_on_empty=self.retry_on_empty)
         if self.reject_response is not None:
-            verdict = self.reject_response(response)
+            try:
+                verdict = self.reject_response(response)
+            except ProviderFailure:
+                raise
+            except Exception as exc:
+                raise ProviderFailure(
+                    FailureKind.REJECTED,
+                    f"{model.provider}: {model.id}: reject_response raised {type(exc).__name__}: {exc}",
+                ) from exc
             if verdict:
                 reason = verdict if isinstance(verdict, str) else "rejected by reject_response"
                 raise ProviderFailure(FailureKind.REJECTED, f"{model.provider}: {model.id}: {reason}")

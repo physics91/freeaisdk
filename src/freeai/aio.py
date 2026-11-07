@@ -6,15 +6,36 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextlib import aclosing
+from dataclasses import replace
 from typing import Any, Self, Unpack
 
-from ._core import Messages, Plan, Request, RouterOptions, Wait, empty_stream, to_chunk
+from ._core import (
+    Messages,
+    Plan,
+    Request,
+    RouterOptions,
+    Wait,
+    empty_stream,
+    output_limit_failure,
+    stream_chunk_answered,
+    to_chunk,
+)
 from .client import _NO_COST, _POLL_SECONDS, _ClientBase, _read_version
 from .errors import FailureKind, FreeAIError, OutputLimitError, ProviderFailure, StreamInterrupted
 from .providers import Provider
 from .types import ChatResponse, ModelInfo, Requirements, StreamChunk
 
 __all__ = ["AsyncFreeAI"]
+
+
+class _Waiter:
+    """One async wait slot; ``alive`` is cleared when the wait ends or a wake claims it."""
+
+    __slots__ = ("future", "alive")
+
+    def __init__(self) -> None:
+        self.future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self.alive = True
 
 
 class _Wakeups:
@@ -26,7 +47,7 @@ class _Wakeups:
     """
 
     def __init__(self, version: Callable[[], int] | None = None) -> None:
-        self._waiting: dict[frozenset[str], deque[asyncio.Future[None]]] = {}
+        self._waiting: dict[frozenset[str], deque[_Waiter]] = {}
         self._version = version
         self._poller: asyncio.Task[None] | None = None
         self._changes = 0
@@ -40,9 +61,10 @@ class _Wakeups:
         for group in list(self._waiting):
             queue = self._waiting[group]
             while queue:
-                future = queue.popleft()
-                if not future.done():
-                    future.set_result(None)
+                waiter = queue.popleft()
+                if waiter.alive and not waiter.future.done():
+                    waiter.alive = False
+                    waiter.future.set_result(None)
                     break
             if not queue:
                 del self._waiting[group]
@@ -51,27 +73,36 @@ class _Wakeups:
         changes, version = mark
         if self._changes != changes:
             return
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._waiting.setdefault(group, deque()).append(future)
+        waiter = _Waiter()
+        self._waiting.setdefault(group, deque()).append(waiter)
         if version is not None and (self._poller is None or self._poller.done()):
             self._poller = asyncio.create_task(self._poll(version))
+        left_early = False
         try:
-            await asyncio.wait_for(future, delay)
+            await asyncio.wait_for(asyncio.shield(waiter.future), delay)
         except TimeoutError:
-            pass
+            left_early = True
+        except asyncio.CancelledError:
+            left_early = True
+            raise
         finally:
+            claimed = not waiter.alive
+            waiter.alive = False
             queue = self._waiting.get(group)
-            if queue is not None and future in queue:
-                queue.remove(future)
+            if queue is not None and waiter in queue:
+                queue.remove(waiter)
                 if not queue:
                     del self._waiting[group]
+            # Wake claimed us after timeout/cancel: pass the signal to the next peer.
+            if claimed and left_early and self._waiting.get(group):
+                self.wake()
 
     async def _poll(self, version: int) -> None:
         while self._waiting:
             await asyncio.sleep(_POLL_SECONDS)
             current = _read_version(self._version)
             if current is None:
-                return
+                continue  # transient store failure: keep polling while waiters remain
             if current != version:
                 version = current
                 self.wake()
@@ -150,7 +181,19 @@ class AsyncFreeAI(_ClientBase):
                     raise OutputLimitError(failure.message, plan.attempts, raw) from failure
                 continue
             except BaseException:
-                plan.release(target)  # includes task cancellation
+                if completion is not None:
+                    plan.failed(
+                        target,
+                        ProviderFailure(
+                            FailureKind.REJECTED,
+                            f"{target.provider}: {target.id}: aborted after response",
+                        ),
+                        started,
+                        completion.snapshots,
+                        usage=completion.body.get("usage") if isinstance(completion.body, dict) else None,
+                    )
+                else:
+                    plan.release(target)  # includes task cancellation before a response
                 raise
             plan.succeeded(
                 target, started, snapshots=completion.snapshots, usage=response.usage, served_model=response.model
@@ -255,6 +298,8 @@ class AsyncFreeAI(_ClientBase):
             usage: dict[str, Any] | None = None
             served: str | None = None
             delivered = False
+            answered = False
+            finish_reason: str | None = None
             try:
                 events = provider.astream(
                     target.id,
@@ -266,12 +311,24 @@ class AsyncFreeAI(_ClientBase):
                 async with aclosing(events):
                     async for event in events:
                         chunk = to_chunk(target, event)
+                        raw_model = event.get("model")
+                        wire_model = raw_model if isinstance(raw_model, str) and raw_model else None
                         if chunk.usage is not None:
                             usage = chunk.usage
+                        if chunk.finish_reason is not None:
+                            finish_reason = chunk.finish_reason
+                        if stream_chunk_answered(chunk):
+                            answered = True
                         if not delivered and not chunk.has_output:
                             continue
                         delivered = True
-                        served = chunk.model
+                        # Sticky wire model: later model-less events must not fall back to the request id.
+                        if wire_model is not None:
+                            served = wire_model
+                        elif served is None:
+                            served = chunk.model
+                        elif chunk.model != served:
+                            chunk = replace(chunk, model=served)
                         emitted.append(chunk.text)
                         yield chunk
             except ProviderFailure as failure:
@@ -283,7 +340,12 @@ class AsyncFreeAI(_ClientBase):
             except BaseException:
                 plan.release(target)
                 raise
-            if not delivered and router.retry_on_empty:
+            if not answered and finish_reason == "length":
+                failure = output_limit_failure(target)
+                plan.failed(target, failure, started, usage=usage)
+                raise OutputLimitError(failure.message, plan.attempts) from None
+            # Match chat EMPTY: reasoning-only (or other non-answer) streams fail over too.
+            if not answered and router.retry_on_empty:
                 plan.failed(target, empty_stream(target), started, usage=usage)
                 continue
             plan.succeeded(target, started, usage=usage, served_model=served)

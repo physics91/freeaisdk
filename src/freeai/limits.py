@@ -41,6 +41,9 @@ LimitScope = Literal["model", "provider"]
 State = MutableMapping[str, Any]
 
 _WINDOW_SECONDS = {"minute": 60.0, "hour": 3600.0, "day": 86400.0}
+# Half-window used only by :func:`_reading_order` to tell same-window drift from a successor.
+# Includes ``month`` (absent from ``_WINDOW_SECONDS``, which is for GCRA intervals only).
+_READING_HALF = {"minute": 30.0, "hour": 1800.0, "day": 43200.0, "month": 15 * 86400.0}
 # Minute and hour windows refill continuously (GCRA) and day and month windows reset at a boundary,
 # unless the platform's headers say otherwise (Groq's daily window refills, OVHcloud's minute resets).
 _ROLLING_BY_DEFAULT = frozenset({"minute", "hour"})
@@ -215,10 +218,10 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
     if rolling and limit.per in _WINDOW_SECONDS:
         interval = _WINDOW_SECONDS[limit.per] / max(snapshot.limit, 1e-9)
         served = now + seen * interval  # when the platform's own count is whole again
-        old_amount = _quota_number(old.get("amount")) if old else None
         old_served = _quota_number(old.get("served")) if old else None
-        if requests and old_amount == snapshot.limit and old_served is not None:
-            served = max(served, old_served)  # only ever moves forward for requests
+        if requests and old_served is not None:
+            # Platforms never hand requests back, even when the reported limit amount changes.
+            served = max(served, old_served)
         tat = served + _pending_total(tx, key, now) * interval
         state: dict[str, Any] = {"tat": tat, "amount": snapshot.limit, "since": now}
         if requests:
@@ -230,10 +233,13 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
         if order < 0:  # the window this reading counted has already ended
             seen = _quota_number(old.get("seen")) or 0.0
             until = _quota_number(old.get("until"))
-        elif order == 0 and requests and old is not None:
-            old_seen = _quota_number(old.get("seen"))
-            if old_seen is not None:
-                seen = max(seen, old_seen)
+        elif order == 0 and old is not None:
+            # Requests never go backwards. Tokens may drop (unused output handed back), but the
+            # window end must not: a past until would make the window look empty.
+            if requests:
+                old_seen = _quota_number(old.get("seen"))
+                if old_seen is not None:
+                    seen = max(seen, old_seen)
             if until is not None:
                 old_until = _quota_number(old.get("until"))
                 if old_until is not None:
@@ -287,7 +293,7 @@ def _reading_order(per: Window, old: dict[str, Any] | None, until: float | None,
     old_until = _quota_number(old.get("until")) if "until" in old else None
     if until is None or old_until is None:
         return 0 if until is None and old_until is None else 1
-    half = _WINDOW_SECONDS.get(per, _WINDOW_SECONDS["day"]) / 2
+    half = _READING_HALF[per]
     delta = until - old_until
     return -1 if delta <= -half else 0 if delta < half else 1
 

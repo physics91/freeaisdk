@@ -17,7 +17,7 @@ from freeai.otel import attempt_attributes
 from freeai.server import MAX_BODY_BYTES, ProxyServer
 from freeai.types import Attempt, ChatResponse
 
-from .conftest import FakeServer, delta, error, sse
+from .conftest import FakeServer, delta, error, ok, sse
 
 ALPHA, BETA = "alpha/one:free", "beta/two:free"
 
@@ -60,6 +60,53 @@ def test_openai_facade(make_ai, server):
     assert "".join(c["choices"][0]["delta"]["content"] for c in chunks) == "ok"
     assert {c["object"] for c in chunks} == {"chat.completion.chunk"}
     assert client.models.list()["data"][0]["id"] == f"openrouter:{ALPHA}"
+
+
+def test_openai_facade_stream_close_releases_slot(clock, server):
+    server.on("m1", sse(delta("x"), delta("y"), delta(finish="stop")), ok(text="second"))
+    provider = Provider(
+        "p",
+        "https://p.example/v1",
+        api_key="k",
+        models=["m1"],
+        max_concurrency=1,
+        http_client=server.client(),
+    )
+    ai = FreeAI([provider], clock=clock, sleep=clock.sleep, max_wait=0)
+    stream = OpenAI(ai).chat.completions.create(messages=[{"role": "user", "content": "hi"}], stream=True)
+    assert next(stream)["choices"][0]["delta"]["content"] == "x"
+    stream.close()
+    assert ai.chat("hi").text == "second"
+
+
+def test_async_openai_facade_stream_aclose_releases_slot(clock, server):
+    server.on("m1", sse(delta("x"), delta("y"), delta(finish="stop")), ok(text="second"))
+    provider = Provider(
+        "p",
+        "https://p.example/v1",
+        api_key="k",
+        models=["m1"],
+        max_concurrency=1,
+        http_client=server.client(),
+        async_http_client=server.aclient(),
+    )
+
+    async def asleep(seconds: float) -> None:
+        clock.sleep(seconds)
+
+    async def main() -> str:
+        ai = AsyncFreeAI([provider], clock=clock, sleep=asleep, max_wait=0)
+        stream = await AsyncOpenAI(ai).chat.completions.create(
+            messages=[{"role": "user", "content": "hi"}], stream=True
+        )
+        assert (await stream.__anext__())["choices"][0]["delta"]["content"] == "x"
+        await stream.aclose()
+        try:
+            return (await ai.chat("hi")).text
+        finally:
+            await ai.aclose()
+
+    assert asyncio.run(main()) == "second"
 
 
 def test_async_openai_models_list(server, clock):
@@ -116,6 +163,44 @@ def test_proxy_chat_models_and_stream(proxy, server):
         assert lines[-1] == "data: [DONE]"
         text = "".join(json.loads(line[6:])["choices"][0]["delta"].get("content", "") for line in lines[:-1])
         assert text == "stream"
+
+
+def test_proxy_stream_interrupted_omits_done(proxy, server):
+    failing = {
+        "error": {"code": 502, "message": "provider crashed"},
+        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}],
+    }
+    server.on(ALPHA, sse(delta("partial"), failing))
+    url = proxy().url
+    with httpx.Client(base_url=url, timeout=10) as http:
+        with http.stream(
+            "POST", "/chat/completions", json={"messages": [{"role": "user", "content": "hi"}], "stream": True}
+        ) as response:
+            assert response.status_code == 200
+            lines = [line for line in response.iter_lines() if line.startswith("data: ")]
+    assert lines[-1] != "data: [DONE]"
+    assert all(line != "data: [DONE]" for line in lines)
+    payload = json.loads(lines[-1][6:])
+    assert payload["error"]["type"] == "server_error"
+    assert "interrupted" in payload["error"]["message"].lower() or "crashed" in payload["error"]["message"].lower()
+
+
+def test_proxy_stream_output_limit_emits_error_without_done(proxy, server):
+    thinking = {"model": "x", "choices": [{"index": 0, "delta": {"reasoning": "..."}}]}
+    server.on(ALPHA, sse(thinking, delta(finish="length")))
+    url = proxy().url
+    with httpx.Client(base_url=url, timeout=10) as http:
+        with http.stream(
+            "POST",
+            "/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": True, "max_tokens": 16},
+        ) as response:
+            assert response.status_code == 200
+            lines = [line for line in response.iter_lines() if line.startswith("data: ")]
+    assert all(line != "data: [DONE]" for line in lines)
+    payload = json.loads(lines[-1][6:])
+    assert payload["error"]["type"] == "invalid_request_error"
+    assert payload["error"]["code"] == "output_limit"
 
 
 def test_proxy_maps_exhaustion_to_429_with_retry_after(proxy, server):
@@ -222,6 +307,18 @@ def test_proxy_redacts_provider_keys(proxy):
     reply = httpx.post(f"{url}/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
     assert reply.status_code == 503
     assert "sk-live-0123456789" not in reply.text and "[redacted]" in reply.text
+
+
+def test_proxy_skips_redacting_very_short_api_keys(proxy):
+    # Keys shorter than 4 chars would blank huge swaths of error text if redacted as substrings.
+    upstream = FakeServer()
+    upstream.on("m1", error(401, "ab is not a valid key; about to fail"))
+    ai = FreeAI(plain(upstream, ["m1"], api_key="ab"), max_wait=0)
+    url = proxy(ai).url
+    reply = httpx.post(f"{url}/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert reply.status_code == 503
+    assert "about to fail" in reply.text
+    assert reply.text.count("[redacted]") == 0
 
 
 # -- CLI and OTel --------------------------------------------------------------------------------

@@ -271,6 +271,20 @@ def test_effective_status_accepts_float_code():
     assert _effective_status({"code": " 503 "}, 200) == 503
     assert _effective_status({"code": "429.5"}, 200) == 502
     assert _effective_status({"code": True}, 200) == 502
+
+
+def test_effective_status_prefers_non_200_http_over_body_code():
+    assert _effective_status({"code": 400, "message": "Rate limit exceeded"}, 429) == 429
+    generic = Provider("g", "https://g.example/v1", api_key="k", models=["m"])
+    failure = generic.classify(
+        429,
+        {"retry-after": "20"},
+        {"error": {"code": 400, "message": "Rate limit exceeded. Please try again in 20s."}},
+    )
+    assert failure.kind is FailureKind.RATE_LIMIT
+    assert failure.status == 429
+    assert failure.retry_after == 20
+    assert failure.scope is Scope.MODEL
     assert kind_scope(OpenRouter(api_key="k"), 200, {"error": {"code": 429.0, "message": "free-models-per-min"}}) == (
         FailureKind.PROVIDER_RATE_LIMIT,
         Scope.PROVIDER,

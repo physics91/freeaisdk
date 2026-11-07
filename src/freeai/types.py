@@ -109,7 +109,9 @@ class StreamChunk:
 
     @property
     def has_output(self) -> bool:
-        return bool(self.text or self.reasoning or self.tool_calls)
+        # Strip so whitespace-only text/reasoning deltas do not commit the stream
+        # (chat EMPTY-fails-over on empty answers).
+        return bool(self.text.strip() or self.reasoning.strip() or self.tool_calls)
 
     def __str__(self) -> str:
         return self.text

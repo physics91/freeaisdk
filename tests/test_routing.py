@@ -6,17 +6,29 @@ import random
 import httpx
 import pytest
 
-from freeai import ExhaustedError, FailureKind, FreeAI, Gemini, Groq, ModelInfo, Provider, ProviderFailure, RetryBudget
+from freeai import (
+    ExhaustedError,
+    FailureKind,
+    FreeAI,
+    Gemini,
+    Groq,
+    ModelInfo,
+    Provider,
+    ProviderFailure,
+    RetryBudget,
+    StreamInterrupted,
+)
 from freeai._core import Wait
 from freeai._messages import _estimate_tokens, content_text, to_chunk, to_response
 from freeai._plan import Plan
 from freeai._routing_types import _total_tokens
 from freeai._sse import EventReader
 from freeai.health import HealthStats
+from freeai.limits import rpm, tpm
 from freeai.providers._catalog import _catalog_model
 from freeai.types import Requirements
 
-from .conftest import FakeClock, FakeServer, error, ok, sse
+from .conftest import FakeClock, FakeServer, delta, error, ok, sse
 
 ALPHA, BETA = "alpha/one:free", "beta/two:free"
 
@@ -58,6 +70,27 @@ def test_reject_response_fails_over_without_cooldown(make_ai, server):
     assert ai.status()["models"] == {}
 
 
+def test_reject_response_exception_keeps_request_quota(clock):
+    server = FakeServer()
+    server.on("m1", ok("x"), ok("y"))
+    n = {"i": 0}
+
+    def hook(_response):
+        n["i"] += 1
+        if n["i"] == 1:
+            raise RuntimeError("hook boom")
+        return False
+
+    ai = make(clock, plain(server, models=["m1"], limits=[rpm(1)]), reject_response=hook)
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi")
+    assert info.value.attempts[0].kind is FailureKind.REJECTED
+    assert "hook boom" in (info.value.attempts[0].message or "")
+    with pytest.raises(ExhaustedError) as again:
+        ai.chat("hi")
+    assert again.value.next_available_in == pytest.approx(61.0)
+
+
 def test_health_strategy_sinks_failing_models(clock):
     server = FakeServer()
     server.on("m1", error(500, "down"))
@@ -96,6 +129,31 @@ def test_half_open_admits_one_probe(clock):
     assert other.next() == Wait(0.25)  # the second caller waits for the probe's verdict
     probe.release(ai.models()[0])
     assert isinstance(other.next(), ModelInfo)
+
+
+def test_half_open_release_keeps_peer_provider_probe(clock):
+    from freeai._routing_types import _model_key, _provider_key
+
+    server = FakeServer()
+    provider = plain(server, models=["m1", "m2", "m3"])
+    ai = make(clock, provider, max_wait=10)
+    sid = provider.state_id
+    model_key = _model_key(sid, "m1")
+    provider_key = _provider_key(sid)
+    with ai._router.store.transaction() as tx:
+        tx[model_key] = {"until": 0.0, "failures": 1}
+    request = ai._router.prepare("hi", None, None, (), None, {})
+    models = {m.id: m for m in ai.models()}
+    first, _, _ = ai._router._admission.reserve([models["m1"]], request)
+    assert first is not None and model_key in ai._router._probing
+    with ai._router.store.transaction() as tx:
+        tx[provider_key] = {"until": 0.0, "failures": 1}
+    second, _, _ = ai._router._admission.reserve([models["m2"]], request)
+    assert second is not None and provider_key in ai._router._probing
+    ai._router._admission.release_slot(models["m1"])
+    assert provider_key in ai._router._probing
+    third, ready, _ = ai._router._admission.reserve([models["m3"]], request)
+    assert third is None and ready == pytest.approx(clock.now + 0.25)
 
 
 def test_max_concurrency_limits_inflight_requests(clock):
@@ -150,6 +208,29 @@ def test_deadline_bounds_waiting_and_http_timeout(clock):
     assert clock.sleeps == []  # a 20 s wait cannot fit a 10 s deadline
 
 
+def test_deadline_leftover_under_one_tenth_second_is_honored(clock):
+    timeouts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions.get("timeout"))
+        return error(429, "slow", headers={"Retry-After": "20"})
+
+    provider = Provider(
+        "p",
+        "https://p.example/v1",
+        api_key="k",
+        models=["m1"],
+        timeout=30,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    ai = make(clock, provider, max_wait=60)
+    clock.now = 0.0
+    with pytest.raises(ExhaustedError):
+        ai.chat("hi", deadline=0.05)
+    assert timeouts[0]["read"] == pytest.approx(0.05)
+    assert timeouts[0]["read"] < 0.1
+
+
 def test_first_token_timeout_counts_only_data_events():
     fake = FakeClock()
     provider = Provider("p", "https://p.example")
@@ -161,10 +242,29 @@ def test_first_token_timeout_counts_only_data_events():
 
     fake2 = FakeClock()
     reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake2)
-    reader.feed('data: {"choices": []}')
-    assert reader.feed("") == [{"choices": []}]
+    reader.feed('data: {"choices": [{"delta": {"content": "hi"}}]}')
+    assert reader.feed("") == [{"choices": [{"delta": {"content": "hi"}}]}]
     fake2.now += 60
-    assert reader.feed(": keepalive") == []  # output already started: no first-token deadline
+    assert reader.feed(": keepalive") == []  # real output started: no first-token deadline
+
+
+def test_first_token_timeout_ignores_role_only_and_empty_choices():
+    fake = FakeClock()
+    provider = Provider("p", "https://p.example")
+    reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake)
+    reader.feed('data: {"choices":[{"delta":{"role":"assistant"}}]}')
+    assert reader.feed("") == [{"choices": [{"delta": {"role": "assistant"}}]}]
+    fake.now += 6
+    with pytest.raises(Exception, match="no streamed output within 5s"):
+        reader.feed(": keepalive")
+
+    fake2 = FakeClock()
+    reader = EventReader("p", httpx.Headers(), 5.0, classify=provider.classify, clock=fake2)
+    reader.feed('data: {"choices":[]}')
+    assert reader.feed("") == [{"choices": []}]
+    fake2.now += 6
+    with pytest.raises(Exception, match="no streamed output within 5s"):
+        reader.feed(": ping")
 
 
 def test_stream_early_exit_releases_the_slot(clock):
@@ -177,6 +277,90 @@ def test_stream_early_exit_releases_the_slot(clock):
         break
     gc.collect()
     assert ai.chat("hi").text == "hello"  # the abandoned stream did not keep the only slot
+
+
+def test_transport_failure_refunds_request_quota(clock):
+    n = {"n": 0}
+
+    def handler(request: httpx.Request):
+        if request.url.path.endswith(("/models", "/models/user")):
+            return httpx.Response(200, json={"data": []})
+        n["n"] += 1
+        if n["n"] == 1:
+            raise httpx.ConnectError("boom")
+        return ok()
+
+    ai = make(
+        clock,
+        Provider(
+            "p",
+            "https://p.example/v1",
+            api_key="k",
+            models=["m1"],
+            limits=[rpm(1)],
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        ),
+    )
+    with pytest.raises(ExhaustedError):
+        ai.chat("hi")
+    clock.now += 16  # past UNAVAILABLE cooldown; request charge must not still block
+    assert ai.chat("hi").text == "hello"
+    assert n["n"] == 2
+
+
+def test_http_error_keeps_request_quota_after_cooldown(clock):
+    server = FakeServer()
+    server.on("m1", error(503, "busy"), ok())
+    ai = make(clock, plain(server, models=["m1"], limits=[rpm(1)]))
+    with pytest.raises(ExhaustedError):
+        ai.chat("hi")
+    clock.now += 16
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi")
+    assert info.value.next_available_in == pytest.approx(45.0)  # rpm TAT still held
+    assert server.models_called == ["m1"]
+
+
+def test_empty_completion_keeps_request_quota(clock):
+    server = FakeServer()
+    server.on("m1", ok(""), ok(text="later"))
+    ai = make(clock, plain(server, models=["m1"], limits=[rpm(1)]))
+    with pytest.raises(ExhaustedError):
+        ai.chat("hi")
+    clock.now += 6  # past EMPTY cooldown; rpm charge must still block
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi")
+    assert info.value.next_available_in == pytest.approx(55.0)
+    assert server.models_called == ["m1"]
+
+
+def test_stream_abandon_after_output_keeps_request_quota(clock):
+    server = FakeServer()
+    server.on("m1", sse({"model": "x", "choices": [{"index": 0, "delta": {"content": "a"}}]}), ok())
+    ai = make(clock, plain(server, models=["m1"], limits=[rpm(1)]))
+    it = ai.stream("hi")
+    assert next(it).text == "a"
+    it.close()
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi")
+    assert info.value.next_available_in == pytest.approx(61.0)
+
+
+def test_accepted_stream_failure_without_usage_keeps_token_estimate(clock):
+    failing = {
+        "error": {"code": 502, "message": "crash"},
+        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}],
+    }
+    server = FakeServer()
+    server.on("m1", sse(delta("hi"), failing), ok())
+    ai = make(clock, plain(server, models=["m1"], limits=[tpm(100)]))
+    with pytest.raises(StreamInterrupted):
+        list(ai.stream("hi", max_tokens=80))
+    clock.now += 16  # past UNAVAILABLE cooldown; token estimate must still block
+    with pytest.raises(ExhaustedError) as info:
+        ai.chat("hi", max_tokens=80)
+    assert info.value.next_available_in == pytest.approx(21.0)
+    assert server.models_called == ["m1"]
 
 
 @pytest.mark.parametrize(

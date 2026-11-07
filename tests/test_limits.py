@@ -24,6 +24,7 @@ from freeai import (
     SQLiteStore,
     rpd,
     rpm,
+    tpd,
     tpm,
 )
 from freeai._core import Wait, _learned_key, _rank
@@ -337,6 +338,59 @@ def test_lower_token_readings_are_taken_unless_their_window_ended():
     assert tx[key]["used"] == 1000
     quota_observe(tx, "p", "m2", minute(7500, 58.0), now + 1, "UTC")  # unused output handed back
     assert tx[key]["used"] == 500
+
+
+def test_same_window_token_until_does_not_move_backward():
+    """Token seen may drop, but a same-window until must not reopen the day early."""
+    tx: dict = {}
+    now = 10_000.0
+    key = quota_observe(tx, "p", "m", RateSnapshot("day", "tokens", 1000, 100, reset_in=3600), now, "UTC").key(
+        "p", "m"
+    )
+    assert tx[key]["until"] == pytest.approx(now + 3600)
+    quota_observe(tx, "p", "m", RateSnapshot("day", "tokens", 1000, 200, reset_in=-50), now, "UTC")
+    assert tx[key]["seen"] == 800  # unused tokens handed back
+    assert tx[key]["until"] == pytest.approx(now + 3600)
+    assert quota_ready_at(tx, [tpd(1000)], "p", "m", Cost(0, 500), now, "UTC") > now
+
+
+def test_month_readings_keep_seen_across_short_until_drift():
+    """Month half-window is weeks, so a 2-day until drift is still the same calendar month."""
+    tx: dict = {}
+    now = 1_000_000.0
+    key = quota_observe(
+        tx,
+        "p",
+        "*",
+        RateSnapshot("month", "requests", 1000, 10, scope="provider", reset_in=20 * 86400),
+        now,
+        "UTC",
+    ).key("p", "*")
+    assert tx[key]["seen"] == 990
+    quota_observe(
+        tx,
+        "p",
+        "*",
+        RateSnapshot("month", "requests", 1000, 900, scope="provider", reset_in=20 * 86400 + 2 * 86400),
+        now + 10,
+        "UTC",
+    )
+    assert tx[key]["seen"] == 990
+
+
+def test_rolling_request_served_survives_limit_amount_change():
+    """A later header with a different limit amount must not forget requests already counted."""
+    tx: dict = {}
+    now = 1000.0
+    key = quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", 10, 5, rolling=True), now, "UTC").key(
+        "p", "m"
+    )
+    served = tx[key]["served"]
+    assert served == pytest.approx(now + 5 * 6.0)
+    quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", 60, 60, rolling=True), now + 1, "UTC")
+    assert tx[key]["amount"] == 60
+    assert tx[key]["served"] == pytest.approx(served)
+    assert tx[key]["tat"] >= served
 
 
 def test_groq_charges_its_chat_template_too(server, clock):
@@ -844,3 +898,38 @@ def test_provider_http_clients_allow_many_concurrent_streams():
     for client in (provider._client(), provider._async_client()):
         pool = client._transport._pool  # type: ignore[attr-defined]
         assert (pool._max_connections, pool._max_keepalive_connections) == (1000, 100)
+
+
+def test_sqlite_corrupt_json_row_raises_keyerror_and_is_deleted(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "corrupt.db"
+    store = SQLiteStore(path)
+    store.close()
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE IF NOT EXISTS freeai_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT INTO freeai_state (key, value) VALUES (?, ?)", ("bad", "{not-json"))
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStore(path)
+    with store.transaction() as tx:
+        with pytest.raises(KeyError):
+            _ = tx["bad"]
+        tx["ok"] = {"n": 1}
+    with store.transaction() as tx:
+        assert "bad" not in tx
+        assert tx["ok"] == {"n": 1}
+    store.close()
+
+
+def test_sqlite_store_stays_closed_after_close(tmp_path):
+    store = SQLiteStore(tmp_path / "closed.db")
+    with store.transaction() as tx:
+        tx["a"] = 1
+    store.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        store.version()
+    with pytest.raises(RuntimeError, match="closed"):
+        with store.transaction():
+            pass

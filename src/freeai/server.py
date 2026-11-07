@@ -42,7 +42,9 @@ class ProxyServer(ThreadingHTTPServer):
         self.ai = ai
         self.token = token or None
         self._token_bytes = None if self.token is None else self.token.encode()
-        self._secrets = [p.api_key for p in ai.providers if p.api_key and len(p.api_key) >= 8]
+        # Redact every non-trivial key; very short placeholders (1-3 chars) skip replace() to
+        # avoid mangling ordinary error text when someone uses api_key="k" in tests.
+        self._secrets = [p.api_key for p in ai.providers if p.api_key and len(p.api_key) >= 4]
         super().__init__(address, _Handler)
 
     @property
@@ -138,13 +140,46 @@ class _Handler(BaseHTTPRequestHandler):
             for chunk in chunks:
                 self._event(chunk_dict(chunk))
         except StreamInterrupted as exc:
-            self._event({"error": {"message": self.server.redact(str(exc)), "type": "server_error"}})
+            # Error ends the stream; do not send [DONE] or clients may treat partial output as success.
+            self._stream_error(chunks, {"message": self.server.redact(str(exc)), "type": "server_error"})
+            return
+        except OutputLimitError as exc:
+            self._stream_error(
+                chunks,
+                {
+                    "message": self.server.redact(str(exc)),
+                    "type": "invalid_request_error",
+                    "code": "output_limit",
+                },
+            )
+            return
+        except FreeAIError as exc:
+            self._stream_error(
+                chunks,
+                {
+                    "message": self.server.redact(str(exc)),
+                    "type": "server_error",
+                    "code": "upstream_error",
+                },
+            )
+            return
         except (BrokenPipeError, ConnectionResetError):
             if hasattr(chunks, "close"):
                 chunks.close()  # client went away: release the model's slot
             return
+        except Exception as exc:
+            self._stream_error(
+                chunks,
+                {"message": self.server.redact(f"{type(exc).__name__}: {exc}"), "type": "server_error"},
+            )
+            return
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
+
+    def _stream_error(self, chunks: Iterator[StreamChunk], error: dict[str, Any]) -> None:
+        if hasattr(chunks, "close"):
+            chunks.close()
+        self._event({"error": error})
 
     # -- helpers ---------------------------------------------------------------------------
 

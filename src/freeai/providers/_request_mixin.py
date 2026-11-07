@@ -181,4 +181,6 @@ class RequestMixin:
         }
 
     def _transport_failure(self, exc: Exception) -> ProviderFailure:
-        return ProviderFailure(FailureKind.UNAVAILABLE, f"{self.name}: {type(exc).__name__}: {exc}")
+        return ProviderFailure(
+            FailureKind.UNAVAILABLE, f"{self.name}: {type(exc).__name__}: {exc}", reached=False
+        )

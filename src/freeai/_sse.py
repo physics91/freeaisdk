@@ -68,7 +68,16 @@ def iter_sse(lines: Iterable[str]) -> Iterator[Any]:
 
 
 def is_event_stream(headers: Headers) -> bool:
-    return "text/event-stream" in headers.get("content-type", "text/event-stream")
+    """True when ``Content-Type``'s media type is ``text/event-stream`` (case-insensitive).
+
+    Missing or blank content types are not treated as SSE: a JSON 200 without ``Content-Type``
+    must take the JSON-as-stream path instead of an empty event-stream parse.
+    """
+    raw = headers.get("content-type")
+    if raw is None or not raw.strip():
+        return False
+    media_type = raw.split(";", 1)[0].strip().casefold()
+    return media_type == "text/event-stream"
 
 
 class EventReader:
@@ -139,9 +148,34 @@ class EventReader:
             # Mid-stream errors arrive as an SSE event while the HTTP status stays 200.
             if error_object(item):
                 raise self._classify(200, self._headers, item)
-            self._seen = True
+            # Role-only / empty preambles are not first tokens: match stream has_output.
+            if _event_has_output(item):
+                self._seen = True
             events.append(item)
         return events
+
+
+def _event_has_output(event: dict[str, Any]) -> bool:
+    """True when an SSE chunk carries user-visible or reasoning text / tool calls."""
+    raw_choices = event.get("choices")
+    choices = raw_choices if isinstance(raw_choices, list) else []
+    choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+    raw_delta = choice.get("delta") if isinstance(choice, dict) else None
+    delta = raw_delta if isinstance(raw_delta, dict) else {}
+    content = delta.get("content")
+    if isinstance(content, str) and content.strip():
+        return True
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    return True
+    reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return True
+    tools = delta.get("tool_calls")
+    return isinstance(tools, list) and any(isinstance(item, dict) for item in tools)
 
 
 def _decode_event(data: list[str], event: str) -> Iterator[Any]:

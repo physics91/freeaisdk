@@ -54,6 +54,7 @@ class Plan:
         self._active: ModelInfo | None = None
         self._reservation = _NO_RESERVATION
         self._admitted: list[RateSnapshot] = []  # headers of the active attempt, applied on arrival
+        self._accepted = False  # True after :meth:`admitted` (platform accepted this attempt)
 
     @property
     def providers(self) -> set[str]:
@@ -83,7 +84,7 @@ class Plan:
             raise ExhaustedError("every candidate model failed", self.attempts)
         model, ready_at, reservation = router.reserve(remaining, self.request)
         if model is not None:
-            self._active, self._reservation, self._admitted = model, reservation, []
+            self._active, self._reservation, self._admitted, self._accepted = model, reservation, [], False
             return model
         delay = max(0.0, ready_at - now)
         if math.isinf(delay):
@@ -103,7 +104,7 @@ class Plan:
         """Seconds until the deadline, used as the per-attempt HTTP timeout."""
         if self.deadline_at is None:
             return None
-        return max(0.1, self.deadline_at - self.router.clock())
+        return max(0.0, self.deadline_at - self.router.clock())
 
     def admitted(self, snapshots: Iterable[RateSnapshot]) -> None:
         """The platform accepted the active attempt: its stream headers arrived.
@@ -118,6 +119,7 @@ class Plan:
         reservation, self._reservation = self._reservation, _NO_RESERVATION
         snapshots = list(snapshots)
         self._admitted.extend(snapshots)
+        self._accepted = True
         router = self.router
         with router._lock, router.store.transaction() as tx:
             # Drop pending before observe so header readings are not double-counted with the reserve.
@@ -127,12 +129,28 @@ class Plan:
         router.changed()
 
     def release(self, model: ModelInfo) -> None:
-        """The attempt ended without an outcome (e.g. the caller stopped reading or was cancelled)."""
+        """The attempt ended without an outcome (e.g. the caller stopped reading or was cancelled).
+
+        If the platform never accepted the attempt (pending reservation still held), undo the local
+        quota charge. After :meth:`admitted`, the platform counted the request so charges stay.
+        """
         detached, reservation = self._detach(model)
         if not detached:
             return
-        self.router._drop_pending(reservation)
-        self.router.changed()
+        router = self.router
+        if reservation.keys:
+            provider = router.provider(model)
+            sid = provider.state_id
+            cost = router.cost(provider, self.request)
+            with router._lock, router.store.transaction() as tx:
+                pending_drop(tx, reservation.id, reservation.keys)
+                now = router.clock()
+                limits = router._limits(tx, provider, model.id)
+                if cost.tokens:
+                    quota_adjust(tx, limits, sid, model.id, "tokens", -cost.tokens, now, provider.reset_tz)
+                if cost.requests:
+                    quota_adjust(tx, limits, sid, model.id, "requests", -cost.requests, now, provider.reset_tz)
+        router.changed()
 
     def _detach(self, model: ModelInfo) -> tuple[bool, Reservation]:
         """Clear the active attempt and concurrency slot; return any reservation still to drop."""
@@ -177,11 +195,23 @@ class Plan:
                     )
                 else:
                     cooldown = 0.0
-                # Refused requests consume no tokens: give the estimate back (requests stay charged).
+                # Tokens: settle to usage when known. After the platform accepted the attempt
+                # (stream headers), keep the estimate if usage is missing so TPM is not undercounted.
+                # Otherwise refund the estimate (refused / never accepted / transport).
+                # Requests: stay charged once the platform may have counted them; undo only when the
+                # attempt never reached the platform (transport failure before any HTTP response).
+                cost = router.cost(provider, self.request)
                 used = _total_tokens(usage)
-                delta = (used if used is not None else 0.0) - router.cost(provider, self.request).tokens
+                if used is not None:
+                    delta = used - cost.tokens
+                elif self._accepted:
+                    delta = 0.0
+                else:
+                    delta = -cost.tokens
                 limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
                 quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+                if not failure.reached and reservation.keys and cost.requests:
+                    quota_adjust(tx, limits, sid, model.id, "requests", -cost.requests, now, provider.reset_tz)
                 router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots])
                 if failure.scope is not Scope.REQUEST:
                     router.health.record(model.key, False, now - started)

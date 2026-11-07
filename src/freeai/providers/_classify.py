@@ -44,12 +44,14 @@ def _code_key(code: Any) -> str:
 
 
 def _effective_status(error: dict[str, Any], status: int) -> int:
+    # Non-200 wire status wins: body ``code`` values like 400 on an HTTP 429 must not
+    # reclassify a rate limit as BAD_REQUEST. Body HTTP-style codes apply only inside a 200.
+    if status != 200:
+        return status
     code = error.get("code")
     parsed = _parse_code_int(code)
     if parsed is not None and 100 <= parsed < 600:
         return parsed
-    if status != 200:
-        return status
     metadata = _metadata(error)
     labels = f"{code} {error.get('type')} {error.get('status')} {metadata.get('error_type')}".lower()
     if "rate_limit" in labels or "resource_exhausted" in labels:
