@@ -62,6 +62,7 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
             )
         if retry_on_empty:
             raise ProviderFailure(FailureKind.EMPTY, f"{model.provider}: {model.id} returned an empty completion")
+    raw_usage = data.get("usage")
     return ChatResponse(
         text=text,
         provider=model.provider,
@@ -69,7 +70,7 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
         requested_model=model.id,
         message=message,
         finish_reason=finish_reason,
-        usage=data.get("usage"),
+        usage=raw_usage if isinstance(raw_usage, Mapping) else None,
         raw=data,
     )
 
@@ -83,6 +84,7 @@ def to_chunk(model: ModelInfo, event: dict[str, Any]) -> StreamChunk:
     raw_delta = choice.get("delta")
     delta = raw_delta if isinstance(raw_delta, dict) else {}
     reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+    raw_usage = event.get("usage")
     return StreamChunk(
         text=content_text(delta.get("content")),
         provider=model.provider,
@@ -90,7 +92,7 @@ def to_chunk(model: ModelInfo, event: dict[str, Any]) -> StreamChunk:
         reasoning=reasoning if isinstance(reasoning, str) else "",
         tool_calls=_tool_call_items(delta.get("tool_calls")),
         finish_reason=_response_str(choice.get("finish_reason")),
-        usage=event.get("usage"),
+        usage=raw_usage if isinstance(raw_usage, Mapping) else None,
         raw=event,
     )
 

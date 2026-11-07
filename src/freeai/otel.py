@@ -9,6 +9,7 @@ attempts of one logical request.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from ._routing_types import _usage_number
@@ -30,7 +31,7 @@ def attempt_attributes(attempt: Attempt) -> dict[str, AttributeValue]:
     }
     if attempt.served_model:
         attributes["gen_ai.response.model"] = attempt.served_model
-    usage = attempt.usage or {}
+    usage = attempt.usage if isinstance(attempt.usage, Mapping) else {}
     for source, target in (
         ("prompt_tokens", "gen_ai.usage.input_tokens"),
         ("completion_tokens", "gen_ai.usage.output_tokens"),
