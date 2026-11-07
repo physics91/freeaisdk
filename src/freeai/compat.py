@@ -114,6 +114,14 @@ class _Models:
         return {"object": "list", "data": [model_dict(m) for m in self._ai.models()]}
 
 
+class _AsyncModels:
+    def __init__(self, ai: AsyncFreeAI) -> None:
+        self._ai = ai
+
+    async def list(self) -> dict[str, Any]:
+        return {"object": "list", "data": [model_dict(m) for m in await self._ai.models()]}
+
+
 class OpenAI:
     """Minimal ``openai.OpenAI`` look-alike backed by :class:`~freeai.FreeAI`."""
 
@@ -138,6 +146,7 @@ class AsyncOpenAI:
     def __init__(self, ai: AsyncFreeAI | None = None, **options: Any) -> None:
         self.freeai = ai if ai is not None else AsyncFreeAI.from_env(**options)
         self.chat = _Chat(_AsyncCompletions(self.freeai))
+        self.models = _AsyncModels(self.freeai)
 
     async def close(self) -> None:
         await self.freeai.aclose()

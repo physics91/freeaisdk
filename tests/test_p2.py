@@ -1,5 +1,6 @@
 """P2 surfaces: aliases, the OpenAI-shaped facade, the local proxy (real socket), CLI, OTel mapping."""
 
+import asyncio
 import json
 import socket
 import threading
@@ -10,7 +11,8 @@ import pytest
 from freeai import FailureKind, FreeAI, Provider
 from freeai import server as server_module
 from freeai.__main__ import main
-from freeai.compat import OpenAI, parse_model
+from freeai.aio import AsyncFreeAI
+from freeai.compat import AsyncOpenAI, OpenAI, parse_model
 from freeai.otel import attempt_attributes
 from freeai.server import MAX_BODY_BYTES, ProxyServer
 from freeai.types import Attempt
@@ -58,6 +60,23 @@ def test_openai_facade(make_ai, server):
     assert "".join(c["choices"][0]["delta"]["content"] for c in chunks) == "ok"
     assert {c["object"] for c in chunks} == {"chat.completion.chunk"}
     assert client.models.list()["data"][0]["id"] == f"openrouter:{ALPHA}"
+
+
+def test_async_openai_models_list(make_ai, server):
+    sync = make_ai()
+
+    async def main() -> dict:
+        client = AsyncOpenAI(
+            AsyncFreeAI(sync.providers, store=sync._router.store, clock=sync._router.clock, max_wait=0)
+        )
+        try:
+            return await client.models.list()
+        finally:
+            await client.close()
+
+    listed = asyncio.run(main())
+    assert listed["object"] == "list"
+    assert listed["data"][0]["id"] == f"openrouter:{ALPHA}"
 
 
 # -- proxy over a real socket ------------------------------------------------------------------
