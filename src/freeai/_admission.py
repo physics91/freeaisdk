@@ -9,6 +9,9 @@ from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from typing import Any
 
 from ._routing_types import (
+    _LEARNED_SCOPES,
+    _LEARNED_UNITS,
+    _LEARNED_WINDOWS,
     _NO_RESERVATION,
     Request,
     Reservation,
@@ -28,9 +31,6 @@ from .types import ModelInfo
 # would be wiped; if a process dies, its reservations over-count for at most this long.
 _PENDING_TTL = 300.0
 _SLOT_POLL = 0.25  # re-check interval while a provider's concurrency slots or a probe are busy
-_LEARNED_WINDOWS = frozenset({"minute", "hour", "day", "month"})
-_LEARNED_UNITS = frozenset({"requests", "tokens"})
-_LEARNED_SCOPES = frozenset({"model", "provider"})
 
 
 class Admission:

@@ -72,15 +72,25 @@ def _learned_key(sid: str) -> str:
     return f"ql:{sid}"
 
 
+_LEARNED_WINDOWS = frozenset({"minute", "hour", "day", "month"})
+_LEARNED_UNITS = frozenset({"requests", "tokens"})
+_LEARNED_SCOPES = frozenset({"model", "provider"})
+
+
 def _learned_identity(entry: Mapping[str, Any]) -> tuple[Any, Any, Any, Any] | None:
     """Identity of a learned limit row; ``model`` stays ``None`` for provider scope.
 
-    Incomplete store rows (missing keys) return ``None`` so callers can skip them.
+    Incomplete or type-corrupt store rows return ``None`` so callers can skip them.
     """
     try:
-        return entry["per"], entry["unit"], entry["scope"], entry["model"]
+        per, unit, scope, model = entry["per"], entry["unit"], entry["scope"], entry["model"]
     except KeyError:
         return None
+    if per not in _LEARNED_WINDOWS or unit not in _LEARNED_UNITS or scope not in _LEARNED_SCOPES:
+        return None
+    if model is not None and not isinstance(model, str):
+        return None
+    return per, unit, scope, model
 
 
 def _covered(*groups: Iterable[RateSnapshot]) -> set[tuple[str, str]]:
