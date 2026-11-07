@@ -18,6 +18,12 @@ from ..limits import RateSnapshot
 SnapshotSink = Callable[[list[RateSnapshot]], None]
 
 
+def _choice_list(body: Mapping[str, Any]) -> list[Any] | None:
+    """Non-empty ``choices`` list, or ``None`` when the body is not a usable completion."""
+    choices = body.get("choices")
+    return choices if isinstance(choices, list) and choices else None
+
+
 @dataclass(frozen=True, slots=True)
 class Completion:
     """A successful non-streaming response plus the limit state its headers reported."""
@@ -152,14 +158,15 @@ class RequestMixin:
 
     def _completion(self, status: int, headers: Headers, body: Any) -> Completion:
         # A 200 can still carry only an error object (OpenRouter documents this).
-        if status != 200 or not isinstance(body, dict) or error_object(body) or not body.get("choices"):
+        if status != 200 or not isinstance(body, dict) or error_object(body) or not _choice_list(body):
             raise self.classify(status, headers, body)
         return Completion(body, self.rate_snapshots(headers))
 
     def _json_as_stream(self, headers: Headers, body: Any) -> Generator[dict[str, Any], None, None]:
-        if not isinstance(body, dict) or error_object(body) or not body.get("choices"):
+        if not isinstance(body, dict) or error_object(body) or not _choice_list(body):
             raise self.classify(200, headers, body)
-        choice = body["choices"][0] if isinstance(body["choices"][0], dict) else {}
+        first = body["choices"][0]
+        choice = first if isinstance(first, dict) else {}
         message = choice.get("message")
         if isinstance(message, dict):
             delta: dict[str, Any] = message
