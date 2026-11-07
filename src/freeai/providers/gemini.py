@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from functools import lru_cache
 from typing import Any
 
 from .._http import Headers, seconds_until_midnight
@@ -26,6 +27,7 @@ _GEMINI_FLASH_LITE = ("gemini-*-flash-lite", "gemini-*-flash-lite-preview")
 _GEMINI_VERSION_RE = re.compile(r"gemini-(\d+)(?:\.(\d+))?")
 
 
+@lru_cache(maxsize=64)
 def _gemini_ignores_sampling(model_id: str) -> bool:
     match = _GEMINI_VERSION_RE.search(model_id)
     if not match:
