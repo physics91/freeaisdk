@@ -45,7 +45,8 @@ def attempt_attributes(attempt: Attempt) -> dict[str, AttributeValue]:
         attributes["error.type"] = str(attempt.kind or "unknown")
         if attempt.scope is not None:
             attributes["freeai.failure.scope"] = str(attempt.scope)
-        attributes["freeai.cooldown_s"] = attempt.cooldown
+        if not math.isnan(attempt.cooldown):
+            attributes["freeai.cooldown_s"] = attempt.cooldown  # +inf is valid (AUTH)
     if attempt.status is not None:
         attributes["http.response.status_code"] = attempt.status
     return attributes
