@@ -144,9 +144,7 @@ def test_sync_warmups_refresh_quota_in_parallel():
 
     class SlowQuota(Provider):
         def __init__(self, name: str) -> None:
-            super().__init__(
-                name, "https://example.test", api_key="k", models=[ModelInfo(name, "m")], keyless=False
-            )
+            super().__init__(name, "https://example.test", api_key="k", models=[ModelInfo(name, "m")], keyless=False)
 
         def _quota_path(self) -> str | None:
             return "/quota"

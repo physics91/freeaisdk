@@ -10,9 +10,7 @@ from collections.abc import Mapping
 from .._http import Headers, parse_reset
 from ..limits import LimitScope, RateSnapshot, Unit, Window
 
-_LIMIT_HEADER_RE = re.compile(
-    r"^x-ratelimit-(limit|remaining|reset)-(requests|tokens)(?:-(minute|hour|day|month))?$"
-)
+_LIMIT_HEADER_RE = re.compile(r"^x-ratelimit-(limit|remaining|reset)-(requests|tokens)(?:-(minute|hour|day|month))?$")
 _WINDOWS: dict[str, Window] = {"minute": "minute", "hour": "hour", "day": "day", "month": "month"}
 
 
@@ -51,9 +49,7 @@ def rate_snapshots_from_headers(
         if number is not None:
             found.setdefault((unit, window), {})[kind] = number
     return [
-        RateSnapshot(
-            window, unit, values["limit"], max(0.0, values["remaining"]), header_scope, values.get("reset")
-        )
+        RateSnapshot(window, unit, values["limit"], max(0.0, values["remaining"]), header_scope, values.get("reset"))
         for (unit, window), values in found.items()
         if values.get("limit", 0) > 0 and "remaining" in values
     ]

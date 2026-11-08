@@ -24,3 +24,8 @@ wheels/
 
 # Task worktrees
 /.worktrees/
+
+# Skill/test artifacts
+artifacts/
+# The "build" skill is source, not build output
+!/.agents/skills/build/

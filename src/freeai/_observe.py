@@ -118,7 +118,7 @@ class Observe:
                 sid, sep, model_id = key.removeprefix("cd:m:").partition("|")
                 if not sep:
                     continue
-                name = by_sid.get(sid)
-                if name is not None:
-                    models[f"{name}:{model_id}"] = left
+                provider_name = by_sid.get(sid)
+                if provider_name is not None:
+                    models[f"{provider_name}:{model_id}"] = left
         return {"models": models, "providers": providers}

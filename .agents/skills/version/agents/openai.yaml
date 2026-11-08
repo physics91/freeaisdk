@@ -1,0 +1,6 @@
+interface:
+  display_name: "Version"
+  short_description: "Bump VERSION, CHANGELOG, and pyproject mirrors"
+  default_prompt: "Apply a SemVer bump for freeai without committing or tagging."
+policy:
+  allow_implicit_invocation: false

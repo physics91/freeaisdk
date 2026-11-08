@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable, Generator, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .._http import Headers, TransportError, decode, error_object
 from .._sse import EventReader, is_event_stream
@@ -34,6 +34,20 @@ class Completion:
 
 class RequestMixin:
     """OpenAI-compatible ``/chat/completions`` send path."""
+
+    name: str
+    base_url: str
+    drop_params: frozenset[str]
+
+    if TYPE_CHECKING:
+
+        def _require_key(self) -> None: ...
+        def _client(self) -> Any: ...
+        def _async_client(self) -> Any: ...
+        def _timeout_args(self, timeout: float | None, first_token: float | None) -> dict[str, Any]: ...
+        def _headers(self) -> Mapping[str, str]: ...
+        def classify(self, status: int, headers: Headers, body: Any) -> ProviderFailure: ...
+        def rate_snapshots(self, headers: Mapping[str, str]) -> list[RateSnapshot]: ...
 
     def prepare_payload(self, model_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Adapt a request to this provider (drop parameters it rejects, set the model)."""

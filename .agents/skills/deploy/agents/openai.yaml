@@ -1,0 +1,6 @@
+interface:
+  display_name: "Deploy"
+  short_description: "Dry-run or publish freeai to PyPI via GitHub Release"
+  default_prompt: "Deploy freeai with the selected PyPI profile after confirmation gates."
+policy:
+  allow_implicit_invocation: false

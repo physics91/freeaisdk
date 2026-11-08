@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test"
+  short_description: "Run focused, affected, or full freeai quality gates"
+  default_prompt: "Run the freeai test profile matching the change scope."

@@ -259,7 +259,10 @@ class AsyncFreeAI(_ClientBase):
         # Overlap account-quota HTTP with catalog discovery on the first plan.
         early = router.claim_warmups(p.name for p in self.providers if p.quota_may_fetch())
         if early:
-            pools, *snapshots = await asyncio.gather(self._pools(), *(provider.arefresh_quota() for provider in early))
+            pools, snapshots = await asyncio.gather(
+                self._pools(),
+                asyncio.gather(*(provider.arefresh_quota() for provider in early)),
+            )
             router.observe_many((provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True))
         else:
             pools = await self._pools()

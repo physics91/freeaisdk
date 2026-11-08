@@ -231,6 +231,8 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
         period = _period(limit.per, now, tz) if limit.per not in _ROLLING_BY_DEFAULT else None
         order = _reading_order(limit.per, old, until, period)
         if order < 0:  # the window this reading counted has already ended
+            if old is None:
+                raise RuntimeError("fixed-window reading order < 0 requires prior state")
             seen = _quota_number(old.get("seen")) or 0.0
             until = _quota_number(old.get("until"))
         elif order == 0 and old is not None:
@@ -364,7 +366,8 @@ def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) 
     if _rolling(limit.per, state):
         period = _WINDOW_SECONDS[limit.per]
         interval = period / capacity
-        tat = _quota_number(state.get("tat")) if state else now
+        tat_n = _quota_number(state.get("tat")) if state else None
+        tat = now if tat_n is None else tat_n
         if tat <= now:
             return now
         # A single request larger than the window waits until it is whole again.
@@ -393,10 +396,11 @@ def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) ->
         return added_zero
     if _rolling(limit.per, state):
         interval = _WINDOW_SECONDS[limit.per] / capacity
-        tat = _quota_number(state.get("tat")) if state else now
+        tat_n = _quota_number(state.get("tat")) if state else None
+        tat = now if tat_n is None else tat_n
         if tat <= now:  # whole: refilling starts with this charge
             return {"tat": max(now, now + amount * interval), "amount": capacity, "since": now}
-        since = _quota_number(state.get("since"))
+        since = _quota_number(state.get("since")) if state else None
         if since is None:
             since = now
         added_tat: dict[str, Any] = {"tat": max(now, tat + amount * interval), "amount": capacity, "since": since}

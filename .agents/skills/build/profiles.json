@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "family": "build",
+  "default_profile": "release",
+  "profiles": {
+    "development": {
+      "mode": "development",
+      "required_inputs": [],
+      "entrypoint": {
+        "location": "skill",
+        "path": "scripts/build-development.sh",
+        "arguments": []
+      },
+      "artifacts": {
+        "paths": [
+          ".venv"
+        ]
+      },
+      "verification": {
+        "location": "skill",
+        "path": "scripts/verify-development-build.sh",
+        "arguments": []
+      }
+    },
+    "release": {
+      "mode": "release",
+      "required_inputs": [
+        "BUILD_VERSION"
+      ],
+      "entrypoint": {
+        "location": "skill",
+        "path": "scripts/build-release.sh",
+        "arguments": [
+          {
+            "literal": "--build-version"
+          },
+          {
+            "input": "BUILD_VERSION"
+          }
+        ]
+      },
+      "artifacts": {
+        "paths": [
+          "dist/*.whl",
+          "dist/*.tar.gz"
+        ]
+      },
+      "verification": {
+        "location": "skill",
+        "path": "scripts/verify-release-build.sh",
+        "arguments": []
+      }
+    }
+  }
+}

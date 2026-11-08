@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .._http import HTTPError, logger
 from ..limits import RateSnapshot
@@ -10,6 +10,13 @@ from ..limits import RateSnapshot
 
 class QuotaMixin:
     """Optional ``GET`` quota endpoints: path, parse, and sync/async refresh."""
+
+    name: str
+
+    if TYPE_CHECKING:
+
+        def _get_json(self, path: str) -> Any: ...
+        async def _aget_json(self, path: str) -> Any: ...
 
     def quota_may_fetch(self) -> bool:
         """True when :meth:`refresh_quota` may perform network I/O."""

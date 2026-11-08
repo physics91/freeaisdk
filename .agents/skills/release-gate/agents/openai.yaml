@@ -1,0 +1,6 @@
+interface:
+  display_name: "Release Gate"
+  short_description: "Local freeai release readiness validation only"
+  default_prompt: "Run freeai release-gate preflight or local-release validation."
+policy:
+  allow_implicit_invocation: false
