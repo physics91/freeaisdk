@@ -257,9 +257,7 @@ class Router:
         """Apply several snapshot batches in one store transaction (empty batches are skipped)."""
         self._observe.observe_many(items)
 
-    def _observe_tx(
-        self, tx: State, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]
-    ) -> None:
+    def _observe_tx(self, tx: State, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]) -> None:
         """Apply ``snapshots`` into an open transaction. Caller must hold ``_lock``; no nested lock."""
         self._observe.apply_tx(tx, provider_name, model_id, snapshots)
 
@@ -332,6 +330,3 @@ class Router:
                 reason = verdict if isinstance(verdict, str) else "rejected by reject_response"
                 raise ProviderFailure(FailureKind.REJECTED, f"{model.provider}: {model.id}: {reason}")
         return response
-
-
-
