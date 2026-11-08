@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import math
+import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .._http import HTTPError, logger
 from ..errors import FreeAIError
@@ -18,6 +19,22 @@ _STALE_CATALOG_RETRY = 60.0
 
 class CatalogMixin:
     """Cached catalog discovery. Expects Provider fields/locks and ``_get_json`` / ``_aget_json``."""
+
+    name: str
+    catalog_ttl: float
+    trains_on_prompts: bool | None
+    _static: tuple[ModelInfo, ...] | None
+    _catalog: tuple[ModelInfo, ...] | None
+    _catalog_at: float
+    _catalog_lock: threading.Lock
+    _sync_catalog_lock: threading.Lock
+    _acatalog_lock: asyncio.Lock | None
+    _acatalog_loop: asyncio.AbstractEventLoop | None
+
+    if TYPE_CHECKING:
+
+        def _get_json(self, path: str) -> Any: ...
+        async def _aget_json(self, path: str) -> Any: ...
 
     def list_models(self, *, refresh: bool = False) -> list[ModelInfo]:
         """Public catalog copy; callers may mutate the returned list safely."""

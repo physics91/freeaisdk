@@ -72,7 +72,7 @@ def to_response(model: ModelInfo, data: dict[str, Any], *, retry_on_empty: bool)
         requested_model=model.id,
         message=message,
         finish_reason=finish_reason,
-        usage=raw_usage if isinstance(raw_usage, Mapping) else None,
+        usage=dict(raw_usage) if isinstance(raw_usage, Mapping) else None,
         raw=data,
     )
 
@@ -94,7 +94,7 @@ def to_chunk(model: ModelInfo, event: dict[str, Any]) -> StreamChunk:
         reasoning=reasoning if isinstance(reasoning, str) else "",
         tool_calls=_tool_call_items(delta.get("tool_calls")),
         finish_reason=_response_str(choice.get("finish_reason")),
-        usage=raw_usage if isinstance(raw_usage, Mapping) else None,
+        usage=dict(raw_usage) if isinstance(raw_usage, Mapping) else None,
         raw=event,
     )
 

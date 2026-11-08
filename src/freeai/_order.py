@@ -14,9 +14,12 @@ from .types import ModelInfo, Requirements
 
 
 class _OrderRequest(Protocol):
-    models: tuple[str, ...]
-    prefer: tuple[str, ...]
-    requirements: Requirements
+    @property
+    def models(self) -> tuple[str, ...]: ...
+    @property
+    def prefer(self) -> tuple[str, ...]: ...
+    @property
+    def requirements(self) -> Requirements: ...
 
 
 class OrderPolicy:
@@ -57,9 +60,7 @@ class OrderPolicy:
         self._rng = rng
         self._lock = lock
 
-    def order(
-        self, request: _OrderRequest, pools: Mapping[str, Sequence[ModelInfo]], *, turn: int
-    ) -> list[ModelInfo]:
+    def order(self, request: _OrderRequest, pools: Mapping[str, Sequence[ModelInfo]], *, turn: int) -> list[ModelInfo]:
         """Candidates for ``request`` in the order they will be tried (ignoring cooldowns)."""
         pool = [m for provider in self.providers for m in pools.get(provider.name, ())]
         ranks: dict[str, int] | None = None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
@@ -22,10 +23,23 @@ class TransportMixin:
     Expects Provider fields set in ``__init__`` (``timeout``, ``base_url``, clients, locks, keys).
     """
 
+    name: str
+    base_url: str
+    api_key: str | None
+    keyless: bool
+    timeout: float
+    _extra_headers: dict[str, str]
+    _http: Client | None
+    _ahttp: AsyncClient | None
+    _owns_http: bool
+    _owns_ahttp: bool
+    _client_lock: threading.Lock
+    _headers_cached: Mapping[str, str] | None
+
     def _headers(self) -> Mapping[str, str]:
         """Stable auth/extra headers. Built once and frozen so callers cannot poison the cache."""
         cached = getattr(self, "_headers_cached", None)
-        if cached is not None:
+        if isinstance(cached, Mapping):
             return cached
         headers = dict(self._extra_headers)
         if self.api_key:
@@ -49,27 +63,33 @@ class TransportMixin:
         return response.json()
 
     def close(self) -> None:
-        if self._owns_http and self._http is not None:
-            self._http.close()
+        http = self._http
+        if self._owns_http and http is not None:
+            http.close()
             self._http = None
 
     async def aclose(self) -> None:
-        if self._owns_ahttp and self._ahttp is not None:
-            await self._ahttp.aclose()
+        ahttp = self._ahttp
+        if self._owns_ahttp and ahttp is not None:
+            await ahttp.aclose()
             self._ahttp = None
         self.close()
 
     def _client(self) -> Client:
         with self._client_lock:
-            if self._http is None:
-                self._http = Client(timeout=self._default_timeout(), limits=CONNECTION_LIMITS)
-            return self._http
+            http = self._http
+            if http is None:
+                http = Client(timeout=self._default_timeout(), limits=CONNECTION_LIMITS)
+                self._http = http
+            return http
 
     def _async_client(self) -> AsyncClient:
         with self._client_lock:
-            if self._ahttp is None:
-                self._ahttp = AsyncClient(timeout=self._default_timeout(), limits=CONNECTION_LIMITS)
-            return self._ahttp
+            ahttp = self._ahttp
+            if ahttp is None:
+                ahttp = AsyncClient(timeout=self._default_timeout(), limits=CONNECTION_LIMITS)
+                self._ahttp = ahttp
+            return ahttp
 
     def _default_timeout(self) -> Timeout:
         return Timeout(self.timeout, connect=min(self.timeout, _CONNECT_TIMEOUT))

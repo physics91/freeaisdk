@@ -145,6 +145,7 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
         self._catalog: tuple[ModelInfo, ...] | None = None
         self._catalog_at = -math.inf
         self._extra_headers = dict(headers or {})
+        self._headers_cached = None
         self._http = http_client
         self._ahttp = async_http_client
         self._owns_http = http_client is None
