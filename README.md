@@ -94,8 +94,9 @@ asyncio.run(main())
 ## 동작 방식
 
 1. **후보 고르기**: 카탈로그(무료 모델만, 1시간 캐시)에서 요청 조건을 만족하는 모델을 고릅니다.
-   `tools`, `response_format`, 이미지 입력이 있으면 그 기능을 지원하는 모델만 남습니다. 라우터 모델
-   (`openrouter/free`)은 맨 뒤에 둡니다.
+   `tools`, `tool_choice`, `response_format`, `reasoning`, 이미지 입력이 있으면 그 기능을 지원하는 모델만 남습니다.
+   꺼진 값(빈 `tools`, `tool_choice="none"`, `response_format={"type": "text"}`, `reasoning=False`)은 후보를
+   거르지 않습니다. 라우터 모델(`openrouter/free`)은 맨 뒤에 둡니다.
 2. **예약**: 후보마다 cooldown, 한도 창, 동시 요청 슬롯을 확인하고 지금 보낼 수 있는 첫 모델을 예약합니다.
    한도는 분과 시간 단위가 GCRA 방식의 이동 창이고, 일과 월 단위는 공급자 시간대의 경계에서 리셋되는 고정
    창입니다. 응답 헤더가 다르다고 알려 주면 그쪽을 따릅니다(`RateSnapshot.rolling`). Groq의 일일 요청 한도는
@@ -133,14 +134,20 @@ asyncio.run(main())
    | 빈 응답, 모델 삭제, 권한 없음 | 내용 없음, 404, 데이터 정책 404 | 그 모델 |
    | 키 오류, 크레딧 부족 | 401, 402, Gemini 프로젝트 인증 403 | 플랫폼 전체 |
    | 잘못된 요청, 문맥 초과 | 400, 413, 422, 요청 하나가 분당 한도를 넘는 Groq 429(`Request too large`) | 이번 요청에서만 제외. 같은 플랫폼이 두 번 거절하면 그 플랫폼 중단 |
-   | 출력 예산 소진 | `finish_reason=length`인데 내용 없음 (추론 모델) | 재시도하지 않고 `OutputLimitError` |
+   | 차단, 답 거절 | 403 검열 차단, `reject_response`가 버린 답 | 이번 요청에서만 제외 (cooldown 없음) |
+   | 출력 예산 소진 | `finish_reason=length`인데 답(텍스트, tool call)이 없음 (추론 모델, 스트림 포함) | 재시도하지 않고 `OutputLimitError` |
 
    `Retry-After`, 리셋 헤더, Gemini `RetryInfo`, 본문의 "retry in 40s" 같은 힌트가 있으면 그 시간을 따릅니다.
 5. **복구**: cooldown이 끝난 모델이나 플랫폼에는 요청 하나만 먼저 보내고(half-open), 결과가 나올 때까지 다른 요청은
    기다립니다. 5xx와 타임아웃이 몰리면 재시도 예산(`RetryBudget`)이 바닥나 장애 중에 모든 무료 엔드포인트를
    훑지 않습니다.
 6. **스트리밍**: 첫 출력 전 실패만 다른 모델로 넘깁니다. 출력이 나간 뒤 실패하면 `StreamInterrupted`에 받은
-   텍스트(`partial_text`)를 담아 올립니다.
+   텍스트(`partial_text`)를 담아 올립니다. 출력은 텍스트, 추론, tool call이고, 첫 출력 전에 오는 `role`만 담은
+   청크와 공백뿐인 청크는 건너뜁니다.
+   스트림이 오류 없이 끝났는데 답(텍스트나 tool call)이 없으면 `chat()`과 같이 처리합니다. `finish_reason=length`면
+   `OutputLimitError`를 올리고, 아니면 다른 모델로 넘깁니다(`retry_on_empty=False`면 그대로 끝냅니다). 추론만 보내고
+   끝난 스트림도 여기에 들어가므로, 호출자는 앞 모델의 추론 청크를 받은 뒤 다음 모델의 청크를 받을 수 있습니다.
+   청크마다 들어 있는 `provider`와 `model`로 구분하세요.
 
 모든 후보가 실패하거나 `max_wait`, `deadline` 안에 쓸 모델이 없으면 `ExhaustedError`가 납니다. 여기에는
 `attempts`와 `next_available_in`이 들어 있습니다.
@@ -155,7 +162,8 @@ asyncio.run(main())
 | `aliases` | 내장 별칭 | `{"mine": ["*qwen*"]}`. 별칭은 순서만 바꾸고 다른 모델을 막지 않습니다 |
 | `max_attempts`, `max_wait` | `8`, `30.0` | 호출당 최대 시도 수, 쉬는 모델을 기다릴 최대 초 |
 | `deadline` | `None` | 호출 전체 시간 상한(초). 각 HTTP 읽기 타임아웃도 남은 시간으로 줄입니다 |
-| `first_token_timeout` | `None` | 스트림이 이 시간 안에 이벤트를 하나도 보내지 않으면 다른 모델로 넘깁니다. 출력이 시작된 뒤에도 읽기 타임아웃으로 남으므로, 그보다 길게 멈추면 `StreamInterrupted`가 납니다 |
+| `first_token_timeout` | `None` | 스트림이 이 시간 안에 실제 출력(텍스트, 추론, tool call)을 보내지 않으면 다른 모델로 넘깁니다. `role`만 담은 첫 이벤트, 빈 `choices`, keepalive 주석은 출력으로 치지 않습니다. 출력이 시작된 뒤에도 읽기 타임아웃으로 남으므로, 그보다 길게 멈추면 `StreamInterrupted`가 납니다 |
+| `retry_on_empty` | `True` | 답이 빈 응답을 실패로 보고 다음 모델로 넘깁니다. 스트림이 추론만 보내고 끝난 경우도 포함합니다. `False`면 빈 답을 그대로 돌려줍니다 |
 | `allow_training` | `True` | `False`면 학습하지 않는다고 밝힌 모델만 씁니다. OpenRouter에는 `provider.data_collection="deny"`를 보냅니다 |
 | `reject_response` | `None` | `fn(ChatResponse) -> bool \| str`. 참이면 그 답을 버리고 다음 모델로 넘어갑니다 (스트림 제외) |
 | `store` | `MemoryStore()` | `SQLiteStore("state.db")`로 프로세스 사이에 cooldown과 사용량 공유 |
@@ -176,7 +184,9 @@ reply = client.chat.completions.create(model="auto", messages=[{"role": "user", 
 print(reply["choices"][0]["message"]["content"], reply["x_freeai"])
 ```
 
-응답은 OpenAI 형식의 dict이고 `x_freeai`에 실제로 답한 공급자와 모델이 들어 있습니다. `AsyncOpenAI`도 있습니다.
+응답은 OpenAI 형식의 dict입니다. 실제로 답한 모델은 `model`에 들어 있고, `x_freeai`에는 답한 공급자
+(`provider`), SDK가 고른 카탈로그 모델 id(`requested_model`), 시도 횟수(`attempts`)가 들어 있습니다.
+`AsyncOpenAI`도 있습니다.
 
 ## 로컬 프록시
 
@@ -187,20 +197,31 @@ FREEAI_PROXY_TOKEN=... freeai serve --host 0.0.0.0
 ```
 
 `/v1/chat/completions`(스트림 포함)와 `/v1/models`, `/health`를 제공합니다. 응답 헤더 `X-FreeAI-Provider`,
-`X-FreeAI-Model`이 실제로 답한 모델을 알려 줍니다. 모든 모델이 쉬는 중이면 `429`와 `Retry-After`를 돌려줍니다.
-OpenAI SDK 클라이언트는 `max_retries=0`으로 두세요. 재시도와 전환은 프록시가 이미 합니다.
+`X-FreeAI-Model`이 실제로 답한 모델을 알려 줍니다(스트림은 아래 한계 참고). 모든 모델이 쉬는 중이면 `429`와
+`Retry-After`를 돌려줍니다. OpenAI SDK 클라이언트는 `max_retries=0`으로 두세요. 재시도와 전환은 프록시가 이미 합니다.
+
+그 밖의 오류는 OpenAI 형식의 `{"error": {...}}` 본문으로 돌려줍니다. 잘못된 요청, 맞는 무료 모델 없음,
+`OutputLimitError`는 `400`, 모든 후보가 실패하면 `503`, 그 밖의 공급자 오류는 `502`입니다. 스트림이 시작된 뒤 난
+오류는 `data: {"error": {...}}` 이벤트 하나로 보내고 `data: [DONE]`은 보내지 않습니다. `[DONE]` 없이 끝난 스트림은
+실패로 처리하세요.
 
 보안: 프록시는 시작할 때 읽은 모든 API 키의 한도를 대신 씁니다. 그래서 기본 바인딩은 루프백이고, 다른 주소에는
-bearer 토큰이 없으면 시작하지 않습니다. 토큰은 상수 시간으로 비교합니다. 오류 본문에서 키 문자열을 가리고, 요청
-본문은 16 MiB로 제한합니다. 클라이언트는 공급자 키를 보내지 않습니다.
+bearer 토큰이 없으면 시작하지 않습니다. 토큰은 상수 시간으로 비교합니다. 오류 본문에서 키 문자열을 가리고(4자
+미만인 키는 제외), 요청 본문은 16 MiB로 제한합니다. 클라이언트는 공급자 키를 보내지 않습니다.
 
 ## 명령줄
 
 ```bash
 freeai models --require tools        # 시도 순서대로 후보 출력
+freeai models --json                 # 후보 키와 문맥 길이를 JSON으로
 freeai chat "질문" --model smart --stream
+freeai chat "질문" --system "짧게 답해" --max-tokens 256
 freeai --store ~/.cache/freeai.db chat "..."   # 다른 프로세스와 상태 공유
+freeai --tiers free,trial chat "..."            # 체험 크레딧 프리셋까지 허용
+freeai serve --port 9000 --token ...            # --token 기본값은 FREEAI_PROXY_TOKEN
 ```
+
+공통 옵션 `--tiers`, `--keyless`, `--no-training`, `--store`, `-v`는 하위 명령(`serve`, `models`, `chat`) 앞에 씁니다.
 
 ## 관측
 
@@ -240,6 +261,9 @@ instrument(ai)   # 시도마다 GenAI 규약 span 하나 (gen_ai.provider.name, 
 - OVHcloud의 분당 한도를 기다리면 최대 약 61초가 걸립니다. `max_wait`가 그보다 짧으면 기다리지 않고 다른
   모델로 넘어갑니다.
 - Z.ai의 동시 요청 1개 제한, `next_flush_time` 시간대(UTC+8), NVIDIA 무료 엔드포인트 목록은 공식 확인이 안 된 값입니다.
+- 프록시 스트림의 `X-FreeAI-Provider`, `X-FreeAI-Model` 헤더는 첫 청크를 보낸 모델입니다. 그 모델이 추론만 보내고
+  끝나 다른 모델로 넘어가면 실제로 답한 모델과 다를 수 있습니다. 청크마다 들어 있는 `model`과 `x_freeai.provider`는
+  정확합니다.
 
 ## 개발
 
