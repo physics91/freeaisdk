@@ -7,8 +7,8 @@ Code written for the ``openai`` package can switch with a one-line change::
     reply = client.chat.completions.create(model="auto", messages=[{"role": "user", "content": "hi"}])
     print(reply["choices"][0]["message"]["content"])
 
-Responses are plain dicts in the OpenAI wire format (not pydantic objects), plus an
-``x_freeai`` entry naming the provider and model that answered.
+Responses are plain dicts in the OpenAI wire format (not pydantic objects). ``model`` is the model
+that answered; an ``x_freeai`` entry adds the provider, the catalog model requested and the attempt count.
 """
 
 from __future__ import annotations

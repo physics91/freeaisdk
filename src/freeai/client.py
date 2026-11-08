@@ -226,9 +226,10 @@ class FreeAI(_ClientBase):
       (power-of-two choices on smoothed success rate and latency).
     - ``max_attempts``, ``max_wait`` (seconds spent waiting for cooldowns) and ``deadline`` (total
       seconds per call; also caps each HTTP read).
-    - ``first_token_timeout`` (streams): give up on a model that sends no event within this many
-      seconds and fail over. It is also the read timeout for the rest of that stream, so a pause
-      longer than this after output started raises :class:`StreamInterrupted`.
+    - ``first_token_timeout`` (streams): give up on a model that streams no output (text, reasoning
+      or tool calls) within this many seconds and fail over; role-only preambles, empty ``choices``
+      and keep-alive comments do not count. It is also the read timeout for the rest of that stream,
+      so a pause longer than this after output started raises :class:`StreamInterrupted`.
     - ``retry_budget``: after a burst of server failures (5xx, timeouts) stop failing over until
       successes refill it; ``False`` disables it.
     - ``allow_training=False`` keeps only models that do not train on prompts (OpenRouter is asked
