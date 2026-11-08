@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "family": "deploy",
+  "default_profile": "pypi-dry-run",
+  "profiles": {
+    "pypi-dry-run": {
+      "target": "local-dist",
+      "environment": "non-production",
+      "required_inputs": [
+        "TAG"
+      ],
+      "entrypoint": {
+        "location": "skill",
+        "path": "scripts/deploy-pypi-dry-run.sh",
+        "arguments": [
+          {
+            "literal": "--tag"
+          },
+          {
+            "input": "TAG"
+          }
+        ]
+      },
+      "preflight": {
+        "location": "skill",
+        "path": "scripts/preflight-pypi-dry-run.sh",
+        "arguments": [
+          {
+            "literal": "--tag"
+          },
+          {
+            "input": "TAG"
+          }
+        ]
+      },
+      "verification": {
+        "location": "skill",
+        "path": "scripts/verify-pypi-dry-run.sh",
+        "arguments": [
+          {
+            "literal": "--tag"
+          },
+          {
+            "input": "TAG"
+          }
+        ]
+      },
+      "rollback": {
+        "location": "skill",
+        "path": "scripts/rollback-pypi-dry-run.sh",
+        "arguments": []
+      },
+      "authorization": {
+        "explicit_request": false,
+        "permission_gate": false,
+        "confirmation_gate": false
+      }
+    },
+    "pypi": {
+      "target": "pypi",
+      "environment": "production",
+      "required_inputs": [
+        "TAG",
+        "PREVIOUS_TAG"
+      ],
+      "entrypoint": {
+        "location": "skill",
+        "path": "scripts/deploy-pypi.sh",
+        "arguments": [
+          {
+            "literal": "--tag"
+          },
+          {
+            "input": "TAG"
+          }
+        ]
+      },
+      "preflight": {
+        "location": "skill",
+        "path": "scripts/preflight-pypi.sh",
+        "arguments": [
+          {
+            "literal": "--tag"
+          },
+          {
+            "input": "TAG"
+          },
+          {
+            "literal": "--previous-tag"
+          },
+          {
+            "input": "PREVIOUS_TAG"
+          }
+        ]
+      },
+      "verification": {
+        "location": "skill",
+        "path": "scripts/verify-pypi.sh",
+        "arguments": [
+          {
+            "literal": "--tag"
+          },
+          {
+            "input": "TAG"
+          }
+        ]
+      },
+      "rollback": {
+        "location": "skill",
+        "path": "scripts/rollback-pypi.sh",
+        "arguments": [
+          {
+            "literal": "--previous-tag"
+          },
+          {
+            "input": "PREVIOUS_TAG"
+          }
+        ]
+      },
+      "authorization": {
+        "explicit_request": true,
+        "permission_gate": true,
+        "confirmation_gate": true
+      }
+    }
+  }
+}

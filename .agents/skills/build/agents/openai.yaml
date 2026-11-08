@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build"
+  short_description: "Sync deps and build freeai wheels with uv"
+  default_prompt: "Build freeai with the selected profile and verify dist artifacts."

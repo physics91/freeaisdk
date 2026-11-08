@@ -1,0 +1,6 @@
+interface:
+  display_name: "Release"
+  short_description: "Orchestrate freeai ownerless bugi releases"
+  default_prompt: "Prepare a freeai release after version and release-gate, awaiting confirmations."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,26 @@
+{
+  "receipt_version": 2,
+  "approved": true,
+  "generation_mode": "ownerless-bugi",
+  "owner": null,
+  "owner_candidates": [],
+  "blockers": [],
+  "consent": {
+    "required": true,
+    "recorded": true,
+    "source": "typed-yes-stdin",
+    "run_id": "JQfb5uQAovVqiMEdDr76qIkqSKcUAQR3",
+    "grant_identity_sha256": "abe44ede9aa17d663333801511a6c68c008d1156fb7a2c6d68f573e026d1c665",
+    "issued_at": 1794024938,
+    "expires_at": 1794025838
+  },
+  "evidence": {
+    "algorithm": "sha256",
+    "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "sources": []
+  },
+  "publication": {
+    "family": "release",
+    "name": "release"
+  }
+}

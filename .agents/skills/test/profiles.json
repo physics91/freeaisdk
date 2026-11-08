@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "family": "test",
+  "default_profile": "affected",
+  "profiles": {
+    "focused": {
+      "mode": "focused",
+      "selector": {
+        "kind": "explicit",
+        "confidence": "high",
+        "known_limitations": []
+      },
+      "allowed_contexts": [
+        "local-change",
+        "task-checkpoint"
+      ],
+      "escalation_reasons": [],
+      "required_inputs": [
+        "TEST_TARGETS"
+      ],
+      "entrypoint": {
+        "location": "skill",
+        "path": "scripts/test-focused.sh",
+        "arguments": [
+          {
+            "literal": "--targets"
+          },
+          {
+            "input": "TEST_TARGETS"
+          }
+        ]
+      },
+      "artifacts": {
+        "paths": [
+          "artifacts/tests/focused"
+        ]
+      }
+    },
+    "affected": {
+      "mode": "affected",
+      "selector": {
+        "kind": "heuristic",
+        "confidence": "medium",
+        "known_limitations": [
+          "No package dependency graph; maps src/freeai/*.py to tests/test_*.py by stem when possible",
+          "Shared modules (client, _core, state) may under-select; escalate to full when uncertain",
+          "Does not include FREEAI_LIVE network tests"
+        ]
+      },
+      "allowed_contexts": [
+        "local-change",
+        "task-checkpoint",
+        "ci-change"
+      ],
+      "escalation_reasons": [],
+      "required_inputs": [
+        "BASE_REF",
+        "HEAD_REF"
+      ],
+      "entrypoint": {
+        "location": "skill",
+        "path": "scripts/test-affected.sh",
+        "arguments": [
+          {
+            "literal": "--base"
+          },
+          {
+            "input": "BASE_REF"
+          },
+          {
+            "literal": "--head"
+          },
+          {
+            "input": "HEAD_REF"
+          }
+        ]
+      },
+      "artifacts": {
+        "paths": [
+          "artifacts/tests/affected"
+        ]
+      }
+    },
+    "full": {
+      "mode": "full",
+      "selector": {
+        "kind": "all",
+        "confidence": "high",
+        "known_limitations": [
+          "Omits tests/test_live.py unless FREEAI_LIVE=1 is explicitly set"
+        ]
+      },
+      "allowed_contexts": [
+        "explicit-request",
+        "existing-ci-policy",
+        "release-gate",
+        "deploy-gate",
+        "scheduled-gate",
+        "risk-escalation"
+      ],
+      "escalation_reasons": [
+        "explicit-request",
+        "existing-ci-policy",
+        "release-gate",
+        "deploy-gate",
+        "scheduled-gate",
+        "public-contract-change",
+        "schema-change",
+        "auth-change",
+        "global-config-change",
+        "lockfile-change",
+        "test-infrastructure-change",
+        "selector-unavailable",
+        "selector-uncertain"
+      ],
+      "required_inputs": [],
+      "entrypoint": {
+        "location": "skill",
+        "path": "scripts/test-full.sh",
+        "arguments": []
+      },
+      "artifacts": {
+        "paths": [
+          "artifacts/tests/full"
+        ]
+      }
+    }
+  }
+}

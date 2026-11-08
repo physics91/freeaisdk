@@ -1,0 +1,26 @@
+{
+  "receipt_version": 2,
+  "approved": true,
+  "generation_mode": "ownerless-bugi",
+  "owner": null,
+  "owner_candidates": [],
+  "blockers": [],
+  "consent": {
+    "required": true,
+    "recorded": true,
+    "source": "typed-yes-stdin",
+    "run_id": "A23LRPHkcSW6nI6fZlX19vA5r9P5KZln",
+    "grant_identity_sha256": "3c90d0cf9865e4842cb14819343db6ed36c6b595408190bea7ede365450e0b17",
+    "issued_at": 1794024939,
+    "expires_at": 1794025839
+  },
+  "evidence": {
+    "algorithm": "sha256",
+    "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "sources": []
+  },
+  "publication": {
+    "family": "release-gate",
+    "name": "release-gate"
+  }
+}
