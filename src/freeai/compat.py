@@ -86,6 +86,7 @@ class _Completions:
         self, *, messages: Sequence[Message], model: str | None = None, stream: bool = False, **params: Any
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
         if stream:
+
             def generate() -> Iterator[dict[str, Any]]:
                 with closing(self._ai.stream(messages, model=parse_model(model), **params)) as chunks:
                     for chunk in chunks:

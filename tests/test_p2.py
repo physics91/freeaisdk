@@ -172,12 +172,14 @@ def test_proxy_stream_interrupted_omits_done(proxy, server):
     }
     server.on(ALPHA, sse(delta("partial"), failing))
     url = proxy().url
-    with httpx.Client(base_url=url, timeout=10) as http:
-        with http.stream(
+    with (
+        httpx.Client(base_url=url, timeout=10) as http,
+        http.stream(
             "POST", "/chat/completions", json={"messages": [{"role": "user", "content": "hi"}], "stream": True}
-        ) as response:
-            assert response.status_code == 200
-            lines = [line for line in response.iter_lines() if line.startswith("data: ")]
+        ) as response,
+    ):
+        assert response.status_code == 200
+        lines = [line for line in response.iter_lines() if line.startswith("data: ")]
     assert lines[-1] != "data: [DONE]"
     assert all(line != "data: [DONE]" for line in lines)
     payload = json.loads(lines[-1][6:])
@@ -189,14 +191,16 @@ def test_proxy_stream_output_limit_emits_error_without_done(proxy, server):
     thinking = {"model": "x", "choices": [{"index": 0, "delta": {"reasoning": "..."}}]}
     server.on(ALPHA, sse(thinking, delta(finish="length")))
     url = proxy().url
-    with httpx.Client(base_url=url, timeout=10) as http:
-        with http.stream(
+    with (
+        httpx.Client(base_url=url, timeout=10) as http,
+        http.stream(
             "POST",
             "/chat/completions",
             json={"messages": [{"role": "user", "content": "hi"}], "stream": True, "max_tokens": 16},
-        ) as response:
-            assert response.status_code == 200
-            lines = [line for line in response.iter_lines() if line.startswith("data: ")]
+        ) as response,
+    ):
+        assert response.status_code == 200
+        lines = [line for line in response.iter_lines() if line.startswith("data: ")]
     assert all(line != "data: [DONE]" for line in lines)
     payload = json.loads(lines[-1][6:])
     assert payload["error"]["type"] == "invalid_request_error"

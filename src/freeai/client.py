@@ -7,7 +7,7 @@ import os
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import replace
@@ -54,7 +54,7 @@ def _read_version(version: Callable[[], int] | None) -> int | None:
 class _Waiter:
     """One sync wait slot; ``alive`` is cleared when the wait ends or a wake claims it."""
 
-    __slots__ = ("event", "alive")
+    __slots__ = ("alive", "event")
 
     def __init__(self) -> None:
         self.event = threading.Event()
@@ -346,7 +346,7 @@ class FreeAI(_ClientBase):
         deadline: float | None = None,
         first_token_timeout: float | None = None,
         **params: Any,
-    ) -> Iterator[StreamChunk]:
+    ) -> Generator[StreamChunk, None, None]:
         """Stream a chat completion. Failover happens only before the first output token;
         a failure after that raises :class:`StreamInterrupted` with the partial text."""
         request = self._request(messages, system, model, require, min_context, params)
@@ -430,7 +430,7 @@ class FreeAI(_ClientBase):
 
     def _stream(
         self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None
-    ) -> Iterator[StreamChunk]:
+    ) -> Generator[StreamChunk, None, None]:
         router = self._router
         plan = self._plan(request, max_attempts, deadline)
         token_timeout = first_token_timeout if first_token_timeout is not None else router.first_token_timeout
@@ -490,9 +490,9 @@ class FreeAI(_ClientBase):
                 plan.release(target)  # includes GeneratorExit when the caller stops iterating
                 raise
             if not answered and finish_reason == "length":
-                failure = output_limit_failure(target)
-                plan.failed(target, failure, started, usage=usage)
-                raise OutputLimitError(failure.message, plan.attempts) from None
+                limit_failure = output_limit_failure(target)
+                plan.failed(target, limit_failure, started, usage=usage)
+                raise OutputLimitError(limit_failure.message, plan.attempts) from None
             # Match chat EMPTY: reasoning-only (or other non-answer) streams fail over too.
             if not answered and router.retry_on_empty:
                 plan.failed(target, empty_stream(target), started, usage=usage)
@@ -518,6 +518,6 @@ def chat(messages: Messages, **kwargs: Any) -> ChatResponse:
     return _default_client().chat(messages, **kwargs)
 
 
-def stream(messages: Messages, **kwargs: Any) -> Iterator[StreamChunk]:
+def stream(messages: Messages, **kwargs: Any) -> Generator[StreamChunk, None, None]:
     """Module-level shortcut using a shared ``FreeAI.from_env()`` client."""
     return _default_client().stream(messages, **kwargs)

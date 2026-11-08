@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from contextlib import aclosing
 from dataclasses import replace
 from typing import Any, Self, Unpack
@@ -31,7 +31,7 @@ __all__ = ["AsyncFreeAI"]
 class _Waiter:
     """One async wait slot; ``alive`` is cleared when the wait ends or a wake claims it."""
 
-    __slots__ = ("future", "alive")
+    __slots__ = ("alive", "future")
 
     def __init__(self) -> None:
         self.future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -213,7 +213,7 @@ class AsyncFreeAI(_ClientBase):
         deadline: float | None = None,
         first_token_timeout: float | None = None,
         **params: Any,
-    ) -> AsyncIterator[StreamChunk]:
+    ) -> AsyncGenerator[StreamChunk, None]:
         """Async iterator of chunks; arguments are validated before the first ``await``."""
         request = self._request(messages, system, model, require, min_context, params)
         return self._stream(request, max_attempts, deadline, first_token_timeout)
@@ -284,7 +284,7 @@ class AsyncFreeAI(_ClientBase):
 
     async def _stream(
         self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None
-    ) -> AsyncIterator[StreamChunk]:
+    ) -> AsyncGenerator[StreamChunk, None]:
         router = self._router
         plan = await self._plan(request, max_attempts, deadline)
         token_timeout = first_token_timeout if first_token_timeout is not None else router.first_token_timeout
@@ -344,9 +344,9 @@ class AsyncFreeAI(_ClientBase):
                 plan.release(target)
                 raise
             if not answered and finish_reason == "length":
-                failure = output_limit_failure(target)
-                plan.failed(target, failure, started, usage=usage)
-                raise OutputLimitError(failure.message, plan.attempts) from None
+                limit_failure = output_limit_failure(target)
+                plan.failed(target, limit_failure, started, usage=usage)
+                raise OutputLimitError(limit_failure.message, plan.attempts) from None
             # Match chat EMPTY: reasoning-only (or other non-answer) streams fail over too.
             if not answered and router.retry_on_empty:
                 plan.failed(target, empty_stream(target), started, usage=usage)

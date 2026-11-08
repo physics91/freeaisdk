@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import threading
 from collections.abc import Mapping
 from types import MappingProxyType
@@ -99,12 +98,6 @@ class TransportMixin:
         if timeout is None and first_token is None:
             return {}
         # Respect short deadline leftovers; only floor when using the provider default.
-        if timeout is None:
-            total = max(0.1, self.timeout)
-        else:
-            total = min(self.timeout, max(0.0, timeout)) or 1e-6
-        if first_token is None:
-            read = total
-        else:
-            read = min(total, max(0.0, first_token)) or 1e-6
+        total = max(0.1, self.timeout) if timeout is None else (min(self.timeout, max(0.0, timeout)) or 1e-6)
+        read = total if first_token is None else (min(total, max(0.0, first_token)) or 1e-6)
         return {"timeout": Timeout(total, connect=min(total, _CONNECT_TIMEOUT), read=read)}

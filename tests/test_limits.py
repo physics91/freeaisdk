@@ -344,9 +344,7 @@ def test_same_window_token_until_does_not_move_backward():
     """Token seen may drop, but a same-window until must not reopen the day early."""
     tx: dict = {}
     now = 10_000.0
-    key = quota_observe(tx, "p", "m", RateSnapshot("day", "tokens", 1000, 100, reset_in=3600), now, "UTC").key(
-        "p", "m"
-    )
+    key = quota_observe(tx, "p", "m", RateSnapshot("day", "tokens", 1000, 100, reset_in=3600), now, "UTC").key("p", "m")
     assert tx[key]["until"] == pytest.approx(now + 3600)
     quota_observe(tx, "p", "m", RateSnapshot("day", "tokens", 1000, 200, reset_in=-50), now, "UTC")
     assert tx[key]["seen"] == 800  # unused tokens handed back
@@ -382,9 +380,7 @@ def test_rolling_request_served_survives_limit_amount_change():
     """A later header with a different limit amount must not forget requests already counted."""
     tx: dict = {}
     now = 1000.0
-    key = quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", 10, 5, rolling=True), now, "UTC").key(
-        "p", "m"
-    )
+    key = quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", 10, 5, rolling=True), now, "UTC").key("p", "m")
     served = tx[key]["served"]
     assert served == pytest.approx(now + 5 * 6.0)
     quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", 60, 60, rolling=True), now + 1, "UTC")
@@ -930,6 +926,5 @@ def test_sqlite_store_stays_closed_after_close(tmp_path):
     store.close()
     with pytest.raises(RuntimeError, match="closed"):
         store.version()
-    with pytest.raises(RuntimeError, match="closed"):
-        with store.transaction():
-            pass
+    with pytest.raises(RuntimeError, match="closed"), store.transaction():
+        pass

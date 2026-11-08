@@ -73,7 +73,7 @@ def is_event_stream(headers: Headers) -> bool:
     Missing or blank content types are not treated as SSE: a JSON 200 without ``Content-Type``
     must take the JSON-as-stream path instead of an empty event-stream parse.
     """
-    raw = headers.get("content-type")
+    raw: str | None = headers.get("content-type")
     if raw is None or not raw.strip():
         return False
     media_type = raw.split(";", 1)[0].strip().casefold()

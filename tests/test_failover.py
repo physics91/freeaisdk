@@ -343,9 +343,12 @@ def test_empty_capability_params_do_not_narrow():
     )
     assert "tools" in request.requirements.parameters
     assert "reasoning" in prepare.prepare("hi", None, None, (), None, {"reasoning": True}).requirements.parameters
-    assert "response_format" in prepare.prepare(
-        "hi", None, None, (), None, {"response_format": {"type": "json_object"}}
-    ).requirements.parameters
+    assert (
+        "response_format"
+        in prepare.prepare(
+            "hi", None, None, (), None, {"response_format": {"type": "json_object"}}
+        ).requirements.parameters
+    )
 
 
 def test_openrouter_provider_field_ignores_non_dict():
