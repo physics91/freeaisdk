@@ -26,3 +26,18 @@ jobs:
       - run: uv run --with ruff ruff format --check src tests
       - run: uv run --with mypy mypy
       - run: uv run --with opentelemetry-sdk pytest -q
+
+  # Runtime + otel extra from the lockfile (not dev / CI-only --with tools).
+  # Advisory DB freshness, network flakiness, and false positives are residual risks.
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: Audit locked runtime dependencies for known CVEs
+        run: |
+          uv export --frozen --no-emit-project --no-dev --extra otel -o /tmp/requirements-audit.txt
+          uv run --with pip-audit==2.10.1 pip-audit -r /tmp/requirements-audit.txt --progress-spinner off
