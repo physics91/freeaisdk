@@ -118,12 +118,26 @@ def test_cohere_monthly_trial_quota():
     assert failure.retry_after == pytest.approx(seconds_until("month", time.time(), "UTC"), abs=5)
 
 
-def test_from_env_keyless_presets_are_opt_in(monkeypatch):
+def test_from_env_uses_only_the_anonymous_endpoints_that_do_not_train(monkeypatch):
     for preset in PRESETS.values():
         for name in preset.env:
             monkeypatch.delenv(name, raising=False)
+    assert [p.name for p in FreeAI.from_env().providers] == ["ovh"]  # no key at all: OVHcloud, not Kilo
+    assert all(p.trains_on_prompts is False for p in FreeAI.from_env().providers)
+    assert [p.name for p in FreeAI.from_env(include_keyless=True).providers] == ["kilo", "ovh"]
     with pytest.raises(FreeAIError, match="include_keyless"):
-        FreeAI.from_env()
+        FreeAI.from_env(include_keyless=False)  # only your own keys, and there are none
+    with pytest.raises(FreeAIError, match="no provider API key"):
+        FreeAI.from_env(tiers=("trial",))  # the anonymous endpoints are free tier
+
+    monkeypatch.setenv("GROQ_API_KEY", "g")
+    assert [p.name for p in FreeAI.from_env().providers] == ["groq", "ovh"]
+    assert [p.name for p in FreeAI.from_env(include_keyless=False).providers] == ["groq"]
+    monkeypatch.setenv("KILO_API_KEY", "k")
+    assert [p.name for p in FreeAI.from_env(include_keyless=False).providers] == ["groq", "kilo"]  # your own key
+    monkeypatch.delenv("GROQ_API_KEY")
+    monkeypatch.delenv("KILO_API_KEY")
+    assert [name for name, preset in PRESETS.items() if preset.keyless_default] == ["ovh"]
     names = [p.name for p in FreeAI.from_env(include_keyless=True).providers]
     assert names == ["kilo", "ovh"]
 
@@ -131,7 +145,7 @@ def test_from_env_keyless_presets_are_opt_in(monkeypatch):
     assert "cloudflare" not in [p.name for p in FreeAI.from_env(include_keyless=True).providers]  # needs both vars
     monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acc")
     monkeypatch.setenv("COHERE_API_KEY", "c")
-    assert [p.name for p in FreeAI.from_env().providers] == ["cloudflare"]
+    assert [p.name for p in FreeAI.from_env().providers] == ["cloudflare", "ovh"]
     with pytest.warns(BillingWarning):
         assert "cohere" in [p.name for p in FreeAI.from_env(tiers=("free", "trial")).providers]
 

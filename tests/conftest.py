@@ -49,6 +49,9 @@ CATALOG = {
 }
 
 
+ALPHA_MODELS = ("alpha/one:free", "beta/two:free", "gamma/three:free", "openrouter/free")  # CATALOG's candidates
+
+
 def completion(text: str = "hello", model: str = "x") -> dict[str, Any]:
     return {
         "id": "gen-1",

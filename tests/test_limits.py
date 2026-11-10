@@ -928,3 +928,249 @@ def test_sqlite_store_stays_closed_after_close(tmp_path):
         store.version()
     with pytest.raises(RuntimeError, match="closed"), store.transaction():
         pass
+
+
+def _burst(ai: FreeAI, tries: int = 10) -> int:
+    sent = 0
+    for _ in range(tries):
+        try:
+            ai.chat("hi")
+        except ExhaustedError:
+            break
+        sent += 1
+    return sent
+
+
+def test_a_changed_declared_limit_replaces_the_stored_size(tmp_path, clock):
+    """A stored row must not keep the size its limit declared when the row was written."""
+    path = tmp_path / "state.db"
+    server = FakeServer()
+    old = make(server, clock, make_provider(server, models=["m1"], limits=[rpm(2)]), store=SQLiteStore(path))
+    assert _burst(old) == 2
+    clock.now += 3600  # later, a release that declares the new number runs on the same state file
+    new = make(server, clock, make_provider(server, models=["m1"], limits=[rpm(5)]), store=SQLiteStore(path))
+    assert _burst(new) == 5
+
+
+def test_a_reported_size_outlives_charges_and_beats_the_declared_one():
+    tx: dict = {}
+    now = 1000.0
+    declared = [rpm(5)]
+    key = declared[0].key("p", "m")
+    quota_observe(tx, "p", "m", RateSnapshot("minute", "requests", 3, 3), now, "UTC")
+    for _ in range(3):
+        assert quota_ready_at(tx, declared, "p", "m", Cost(1.0), now, "UTC") == now
+        quota_charge(tx, declared, "p", "m", Cost(1.0), now, "UTC")
+        assert (tx[key]["amount"], tx[key]["srv"]) == (3, 1)  # the platform said 3, whatever was declared
+    assert quota_ready_at(tx, declared, "p", "m", Cost(1.0), now, "UTC") > now
+
+    fixed = [rpd(50)]
+    quota_observe(tx, "p", "m", RateSnapshot("day", "requests", 2, 1), now, "UTC")
+    quota_charge(tx, fixed, "p", "m", Cost(1.0), now, "UTC")
+    assert tx[fixed[0].key("p", "m")]["amount"] == 2
+    assert quota_ready_at(tx, fixed, "p", "m", Cost(1.0), now, "UTC") > now
+
+
+def test_a_size_copied_by_an_older_version_is_not_taken_for_a_reading():
+    now = 1000.0
+    declared = [rpm(4)]
+    key = declared[0].key("p", "m")
+    tx: dict = {key: {"tat": now + 30, "amount": 2, "since": now - 30}}  # two requests, written when it was rpm(2)
+    assert quota_ready_at(tx, declared, "p", "m", Cost(1.0), now, "UTC") == now  # 2 of 4 used, not 2 of 2
+    quota_charge(tx, declared, "p", "m", Cost(1.0), now, "UTC")
+    assert "amount" not in tx[key]  # a charge stores no size of its own
+
+
+# -- a reading already counts requests that were sent well before the one it came back with -----
+
+
+def test_a_reading_leaves_out_reservations_it_already_counts():
+    from freeai.limits import ACCEPT_MARGIN, _pending_total
+
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:requests"
+    snapshot = RateSnapshot("minute", "requests", limit=10, remaining=7)  # the platform counted 3
+
+    def used_after(reading_sent_at: float | None) -> float:
+        tx: dict = {}
+        pending_add(tx, "old", [(key, 1.0)], now + 300, now - 20)  # still being answered
+        pending_add(tx, "young", [(key, 1.0)], now + 300, now - 1)  # reserved after the reading's request
+        pending_add(tx, "legacy", [(key, 1.0)], now + 300)  # a row of an older version: no send time
+        quota_observe(tx, "p", "m", snapshot, now, "UTC", reading_sent_at)
+        assert set(tx["p:" + key]) == {"old", "young", "legacy"}  # reservations stay until their request ends
+        return (tx[key]["tat"] - now) / 6.0
+
+    assert used_after(None) == pytest.approx(6)  # a quota endpoint: every reservation is added
+    assert used_after(now - 3) == pytest.approx(5)  # "old" was at the platform before this request
+    assert used_after(now - 20 + ACCEPT_MARGIN - 0.1) == pytest.approx(6)  # not long enough before it
+    assert used_after(now - 20 + ACCEPT_MARGIN) == pytest.approx(5)
+
+    fixed: dict = {}
+    day = "q:p:m:day:requests"
+    pending_add(fixed, "old", [(day, 1.0)], now + 300, now - 20)
+    quota_observe(fixed, "p", "m", RateSnapshot("day", "requests", 50, 48), now, "UTC", now - 3)
+    assert fixed[day]["used"] == 2  # the fixed window as well
+    assert _pending_total(fixed, day, now) == 1.0  # nothing is dropped by reading
+
+
+def test_the_margin_covers_how_long_a_request_takes_to_arrive():
+    from freeai.limits import ACCEPT_MARGIN
+    from freeai.providers._transport_mixin import _CONNECT_TIMEOUT
+
+    assert ACCEPT_MARGIN >= _CONNECT_TIMEOUT + EDGE_MARGIN
+
+
+def _slow_request_then(clock: FakeClock, later: float):
+    """Answer the first request only after ``later`` seconds, in which three more requests are tried."""
+    outcomes: list[str] = []
+    entered: list[bool] = []
+    state: dict = {}
+
+    def meanwhile(accepted: list[dict]) -> None:
+        if entered:
+            return  # one of the inner requests
+        entered.append(True)
+        accepted.append({})  # the platform counts the slow request the moment it arrives
+        clock.now += later
+        for _ in range(3):
+            try:
+                state["ai"].chat("inner")
+                outcomes.append("sent")
+            except ExhaustedError:
+                outcomes.append("blocked")
+        accepted.pop()  # _counting appends it itself when this returns
+
+    return outcomes, meanwhile, state
+
+
+def test_a_request_still_being_answered_is_counted_once(clock):
+    # A slow request holds one of four slots. Ten seconds on, another request's headers say "2 of 4
+    # used": the slow one and itself. Adding the slow one's reservation again would make it 3.
+    outcomes, meanwhile, state = _slow_request_then(clock, later=10.0)
+    server = FakeServer().on("m1", _counting(4, meanwhile))
+    state["ai"] = ai = make(server, clock, make_provider(server, models=["m1"], limits=[rpm(4)]))
+    ai.chat("slow")
+    assert outcomes == ["sent", "sent", "sent"]  # all four slots were used
+    assert _pending(ai) == []
+
+
+def test_a_request_sent_just_before_is_still_added_to_a_reading(clock):
+    # Two seconds are not enough to know that the first request has arrived: it stays reserved on
+    # top of the reading (it could still be on its way), which costs a slot until it answers.
+    outcomes, meanwhile, state = _slow_request_then(clock, later=2.0)
+    server = FakeServer().on("m1", _counting(4, meanwhile))
+    state["ai"] = ai = make(server, clock, make_provider(server, models=["m1"], limits=[rpm(4)]))
+    ai.chat("slow")
+    assert outcomes == ["sent", "sent", "blocked"]
+
+
+def test_another_process_request_being_answered_is_counted_once(tmp_path, clock):
+    path = tmp_path / "state.db"
+    outcomes: list[str] = []
+    entered: list[bool] = []
+    shared = _counting(4)  # one platform account behind both processes
+
+    def first_process(body: dict) -> httpx.Response:
+        reply = shared(body)  # counted on arrival
+        if not entered:
+            entered.append(True)
+            clock.now += 10.0
+            other = FakeServer().on("m1", shared)
+            second = make(other, clock, make_provider(other, models=["m1"], limits=[rpm(4)]), store=SQLiteStore(path))
+            for _ in range(4):
+                try:
+                    second.chat("from the other process")
+                    outcomes.append("sent")
+                except ExhaustedError:
+                    outcomes.append("blocked")
+        return reply
+
+    server = FakeServer().on("m1", first_process)
+    first = make(server, clock, make_provider(server, models=["m1"], limits=[rpm(4)]), store=SQLiteStore(path))
+    first.chat("slow")
+    assert outcomes == ["sent", "sent", "sent", "blocked"]  # three more fit beside the slow one, not two
+
+
+def test_a_reading_taken_earlier_does_not_replace_a_later_one():
+    # Request A is sent, then B. B answers first; A's headers arrive afterwards but hold the count
+    # from when A was accepted, before B existed. Applying them would forget what B used.
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:tokens"
+    tx: dict = {}
+
+    def used() -> float:
+        return (tx[key]["tat"] - now) * 8000 / 60
+
+    def read(remaining: float, sent_at: float | None) -> None:
+        quota_observe(tx, "p", "m", RateSnapshot("minute", "tokens", 8000, remaining), now, "UTC", sent_at)
+
+    read(7000, now - 1)  # B: sent a second ago
+    assert used() == pytest.approx(1000)
+    read(7400, now - 3)  # A: sent before B, answered after it
+    assert used() == pytest.approx(1000)
+    quota_charge(tx, [tpm(8000)], "p", "m", Cost(1.0, 500.0), now, "UTC")
+    read(7400, now - 3)
+    assert used() == pytest.approx(1500)  # a charge in between does not lose track of that
+    read(7900, now)  # a later request's reading is taken, lower or not: unused output came back
+    assert used() == pytest.approx(100)
+    read(7400, None)  # and so is one without a send time
+    assert used() == pytest.approx(600)
+    read(7000, now - 3)  # which also ends the comparison
+    assert used() == pytest.approx(1000)
+
+
+def test_a_window_declared_twice_uses_the_later_declaration(clock):
+    # A preset's default and the caller's rpm= name the same window. Charging both counted every
+    # request twice in one row, which made rpm=10 behave like 20 and, with sizes kept apart, 20 like 13.
+    def burst_with(**kwargs) -> int:
+        server = FakeServer()
+        defaults = [rpm(40, scope="provider"), rpd(1000)]
+        return _burst(make(server, clock, make_provider(server, models=["m1"], limits=defaults, **kwargs)), 70)
+
+    assert burst_with() == 40
+    assert burst_with(rpm=20) == 20
+    assert burst_with(rpm=10) == 10
+    assert burst_with(rpm=60) == 60  # the caller knows better than the preset, in either direction
+    assert burst_with(rpd=3) == 3  # a provider-wide day next to the preset's per-model day: both apply
+
+
+def test_a_clock_set_back_does_not_leave_readings_ignored():
+    now = 1_700_000_000.0
+    key = "q:p:m:minute:tokens"
+    tx: dict = {}
+
+    def read(remaining: float, at: float, sent_at: float) -> float:
+        quota_observe(tx, "p", "m", RateSnapshot("minute", "tokens", 8000, remaining), at, "UTC", sent_at)
+        return (tx[key]["tat"] - at) * 8000 / 60
+
+    assert read(7000, now, now - 1) == pytest.approx(1000)
+    back = now - 3600  # the wall clock is set back an hour: the reading above now lies in the future
+    assert read(7900, back, back - 1) == pytest.approx(100)  # taken all the same
+    applied = dict(tx[key])
+    read(7400, back + 0.1, back - 2)
+    assert tx[key] == applied  # and readings are told apart by their order again from here
+
+
+def test_a_commit_that_fails_leaves_no_slot_or_probe_taken(clock):
+    from contextlib import contextmanager
+
+    class Flaky(MemoryStore):
+        fail = False
+
+        @contextmanager
+        def transaction(self):
+            with super().transaction() as tx:
+                yield tx
+                if self.fail:
+                    raise RuntimeError("commit failed")
+
+    store = Flaky()
+    server = FakeServer()
+    ai = make(server, clock, make_provider(server, models=["m1"], limits=[rpm(5)], max_concurrency=1), store=store)
+    store.fail = True
+    with pytest.raises(RuntimeError, match="commit failed"):
+        ai.chat("hi")
+    assert sum(ai._router._inflight.values()) == 0
+    assert not ai._router._probing and not ai._router._admission._limit_probes
+    store.fail = False
+    assert ai.chat("hi").text == "hello"  # the only slot was not lost to the request that never left

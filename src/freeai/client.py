@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Generator, Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from contextlib import closing
 from dataclasses import replace
 from typing import Any, Self, Unpack
@@ -21,16 +21,17 @@ from ._core import (
     Router,
     RouterOptions,
     Wait,
+    _rank,
     empty_stream,
     output_limit_failure,
     stream_chunk_answered,
     to_chunk,
 )
 from ._http import logger
-from .errors import FailureKind, FreeAIError, OutputLimitError, ProviderFailure, StreamInterrupted
+from .errors import ExhaustedError, FailureKind, FreeAIError, OutputLimitError, ProviderFailure, StreamInterrupted
 from .limits import Cost
 from .providers import OpenRouter, Provider, Tier, build_from_env
-from .types import ChatResponse, ModelInfo, Requirements, StreamChunk
+from .types import CatalogDrift, ChatResponse, ModelInfo, Requirements, StreamChunk
 
 __all__ = ["DEFAULT_EXCLUDE", "FreeAI", "chat", "stream"]
 
@@ -94,6 +95,17 @@ class _Wakeups:
                         break
                 if not queue:
                     del self._waiting[group]
+
+    def wake_all(self) -> None:
+        """Wake every waiter: a batch was cancelled, and its requests must notice now."""
+        with self._lock:
+            self._changes += 1
+            for queue in self._waiting.values():
+                for waiter in queue:
+                    if waiter.alive:
+                        waiter.alive = False
+                        waiter.event.set()
+            self._waiting.clear()
 
     def wait(self, delay: float, mark: tuple[int, int | None], group: frozenset[str]) -> None:
         """Sleep up to ``delay``; return early when woken, or at once if a change came since ``mark``."""
@@ -161,18 +173,27 @@ class _ClientBase:
         self._router = Router(providers, **options)
 
     @classmethod
-    def from_env(cls, *, tiers: Iterable[Tier] = ("free",), include_keyless: bool = False, **kwargs: Any) -> Self:
+    def from_env(cls, *, tiers: Iterable[Tier] = ("free",), include_keyless: bool | None = None, **kwargs: Any) -> Self:
         """Use every preset whose environment variables are set and whose tier is in ``tiers``.
 
         Only ``"free"`` presets are enabled by default; pass ``tiers=("free", "trial")`` to opt into
         trial credit (Cerebras, Cohere) or ``"paid"`` for pay-as-you-go keys (Mistral).
-        ``include_keyless=True`` also enables anonymous endpoints (Kilo without a key, OVHcloud).
+
+        Anonymous endpoints need no key, so using them sends prompts to a platform you have no
+        account with. By default only OVHcloud's are used, which states that it never trains on
+        prompts; ``include_keyless=True`` adds Kilo without a key (its free models may train on
+        prompts), and ``include_keyless=False`` uses none, so that only your own keys are spent.
         """
         return cls(build_from_env(tiers, include_keyless), **kwargs)
 
     @property
     def providers(self) -> list[Provider]:
         return self._router.providers
+
+    @property
+    def max_wait(self) -> float:
+        """Seconds a request may wait for cooldowns and quota unless the call says otherwise."""
+        return self._router.max_wait
 
     def status(self) -> dict[str, dict[str, float]]:
         """Remaining cooldown seconds per model key and per provider."""
@@ -205,27 +226,48 @@ class _ClientBase:
                 pools[provider.name] = result
         return pools
 
+    def _chat_models_only(self, drift: CatalogDrift) -> CatalogDrift:
+        """Drop unpinned ids this client would never chat with (``exclude``: guards, speech, embeddings)."""
+        exclude = self._router.exclude
+
+        def chats(model_id: str) -> bool:
+            # Catalogs spell ids freely ("Qwen3Guard-Gen-8B", "Qwen3-Embedding-8B"): also match in lower case.
+            spellings = {model_id, model_id.lower()}
+            return all(_rank(ModelInfo(drift.provider, s), exclude) == len(exclude) for s in spellings)
+
+        return replace(drift, unpinned=tuple(m for m in drift.unpinned if chats(m)))
+
     def _plan_after_pools(
-        self, request: Request, pools: dict[str, Sequence[ModelInfo]], max_attempts: int | None, deadline: float | None
+        self,
+        request: Request,
+        pools: dict[str, Sequence[ModelInfo]],
+        max_attempts: int | None,
+        deadline: float | None,
+        max_wait: float | None = None,
     ) -> tuple[Plan, Sequence[Provider]]:
         """Order candidates and build a plan; return warmups still needed for ``plan.providers``."""
         router = self._router
         ordered = router.order(request, pools, turn=router.next_turn())
-        plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline)
+        plan = router.plan(request, ordered, max_attempts=max_attempts, deadline=deadline, max_wait=max_wait)
         return plan, router.claim_warmups(plan.providers)
 
 
 class FreeAI(_ClientBase):
     """Chat with whichever free model is currently available.
 
-    Every call picks the first ready candidate, sends the request, and on failure benches that
-    model (or the whole provider for account-wide limits) and moves to the next one. Options:
+    Every call picks a candidate that can be sent now, sends the request, and on failure benches
+    that model (or the whole provider for account-wide limits) and moves to the next one. Options:
 
     - ``prefer``/``exclude``: glob patterns on model ids or ``provider:id`` keys.
-    - ``strategy``: ``"priority"`` (default), ``"round_robin"``, ``"random"`` or ``"health"``
+    - ``strategy``: ``"quota"`` (default: the ready candidate whose quota comes back soonest, so
+      allowances that refill every minute are spent before daily ones), ``"priority"`` (the first
+      ready one in the order given), ``"round_robin"``, ``"random"`` or ``"health"``
       (power-of-two choices on smoothed success rate and latency).
-    - ``max_attempts``, ``max_wait`` (seconds spent waiting for cooldowns) and ``deadline`` (total
-      seconds per call; also caps each HTTP read).
+    - ``adapt_limits`` (default True, experimental): learn the real size of request limits per day
+      or month that are declared as estimates; ``False`` keeps the declared numbers.
+    - ``max_attempts``, ``max_wait`` (seconds spent waiting for cooldowns and quota; ``math.inf``
+      waits as long as it takes) and ``deadline`` (total seconds per call; also caps each HTTP
+      read). All three can also be given per call.
     - ``first_token_timeout`` (streams): give up on a model that streams no output (text, reasoning
       or tool calls) within this many seconds and fail over; role-only preambles, empty ``choices``
       and keep-alive comments do not count. It is also the read timeout for the rest of that stream,
@@ -280,18 +322,96 @@ class FreeAI(_ClientBase):
         min_context: int | None = None,
         max_attempts: int | None = None,
         deadline: float | None = None,
+        max_wait: float | None = None,
         **params: Any,
     ) -> ChatResponse:
         """Send a chat completion, failing over across free models until one answers.
 
         ``model`` restricts the candidates (exact ids, ``provider:id`` keys or glob patterns) and
-        orders them. Extra keyword arguments (``temperature``, ``tools``, ...) go to the API.
+        orders them. ``max_attempts``, ``deadline`` and ``max_wait`` override the client's for this
+        call. Extra keyword arguments (``temperature``, ``tools``, ...) go to the API.
         """
-        router = self._router
         request = self._request(messages, system, model, require, min_context, params)
-        plan = self._plan(request, max_attempts, deadline)
+        return self._chat(request, max_attempts, deadline, max_wait)
+
+    def batch(
+        self,
+        prompts: Iterable[Messages],
+        *,
+        concurrency: int = 8,
+        max_wait: float | None = math.inf,
+        on_result: Callable[[int, ChatResponse | FreeAIError], None] | None = None,
+        system: str | None = None,
+        model: str | Sequence[str] | None = None,
+        require: Iterable[str] = (),
+        min_context: int | None = None,
+        max_attempts: int | None = None,
+        deadline: float | None = None,
+        **params: Any,
+    ) -> list[ChatResponse | FreeAIError]:
+        """Answer many prompts, waiting for quota instead of giving up when it runs out.
+
+        Up to ``concurrency`` requests run or wait at a time. The result has one entry per prompt,
+        in the order given: the response, or the :class:`FreeAIError` that request ended with (one
+        failing does not stop the others). ``on_result(index, result)`` is called from a worker
+        thread as each one finishes.
+
+        ``max_wait`` has no limit by default here: when every model is rate limited the batch
+        sleeps until quota is back, so a batch larger than a minute's allowance still completes.
+        If only a daily allowance is left to wait for, that means sleeping until it resets; pass
+        ``max_wait`` or ``deadline`` (both per prompt) to give up earlier. Any other exception, and
+        Ctrl-C, stops the batch: requests still waiting are woken and end. (A ``sleep`` of your own,
+        as passed to the constructor for tests, cannot be woken and is slept out.)
+        """
+        if concurrency < 1:
+            raise ValueError("concurrency must be >= 1")
+        items = list(prompts)
+        needs = tuple(require)
+        results: list[ChatResponse | FreeAIError | None] = [None] * len(items)
+        stop = threading.Event()
+
+        def answer(index: int) -> None:
+            result: ChatResponse | FreeAIError
+            try:
+                request = self._request(items[index], system, model, needs, min_context, dict(params))
+                result = self._chat(request, max_attempts, deadline, max_wait, stop)
+            except FreeAIError as exc:
+                result = exc
+            results[index] = result
+            if on_result is not None and not stop.is_set():
+                on_result(index, result)
+
+        with ThreadPoolExecutor(max_workers=min(concurrency, max(1, len(items)))) as pool:
+            futures = [pool.submit(answer, index) for index in range(len(items))]
+            try:
+                finished, _ = wait(futures, return_when=FIRST_EXCEPTION)
+                for future in finished:
+                    future.result()  # raises what stopped the batch, if anything did
+            except BaseException:
+                stop.set()
+                for future in futures:
+                    future.cancel()
+                if self._wakeups is not None:
+                    self._wakeups.wake_all()
+                raise
+        return [result for result in results if result is not None]
+
+    def _chat(
+        self,
+        request: Request,
+        max_attempts: int | None,
+        deadline: float | None,
+        max_wait: float | None,
+        stop: threading.Event | None = None,
+    ) -> ChatResponse:
+        router = self._router
+        plan = self._plan(request, max_attempts, deadline, max_wait)
         while True:
             mark = self._mark()
+            # After the mark: a stop that comes later bumps it (``wake_all``), so the wait below
+            # returns at once; one that came earlier is seen here.
+            if stop is not None and stop.is_set():
+                raise ExhaustedError("the batch was stopped", plan.attempts)
             step = plan.next()
             if isinstance(step, Wait):
                 self._pause(step, mark)
@@ -344,13 +464,14 @@ class FreeAI(_ClientBase):
         min_context: int | None = None,
         max_attempts: int | None = None,
         deadline: float | None = None,
+        max_wait: float | None = None,
         first_token_timeout: float | None = None,
         **params: Any,
     ) -> Generator[StreamChunk, None, None]:
         """Stream a chat completion. Failover happens only before the first output token;
         a failure after that raises :class:`StreamInterrupted` with the partial text."""
         request = self._request(messages, system, model, require, min_context, params)
-        return self._stream(request, max_attempts, deadline, first_token_timeout)
+        return self._stream(request, max_attempts, deadline, first_token_timeout, max_wait)
 
     def models(
         self,
@@ -367,6 +488,15 @@ class FreeAI(_ClientBase):
         requirements = Requirements(frozenset(require), frozenset(input_modalities), min_context)
         request = Request({}, requirements, (), _NO_COST)
         return self._router.order(request, self._pools(), turn=0)
+
+    def audit(self) -> list[CatalogDrift]:
+        """Where each pinned model list differs from the platform's catalog (read-only).
+
+        Providers that discover their models (OpenRouter, Kilo, Requesty) pin nothing and are left
+        out. Use it to see when a preset's list needs an update: nothing here changes routing.
+        """
+        drifts = (provider.catalog_drift() for provider in self.providers)
+        return [self._chat_models_only(drift) for drift in drifts if drift is not None]
 
     def close(self) -> None:
         for provider in self.providers:
@@ -397,7 +527,9 @@ class FreeAI(_ClientBase):
         except FreeAIError as exc:
             return exc
 
-    def _plan(self, request: Request, max_attempts: int | None, deadline: float | None) -> Plan:
+    def _plan(
+        self, request: Request, max_attempts: int | None, deadline: float | None, max_wait: float | None = None
+    ) -> Plan:
         router = self._router
         # Overlap account-quota HTTP with catalog discovery on the first plan.
         early = router.claim_warmups(p.name for p in self.providers if p.quota_may_fetch())
@@ -410,7 +542,7 @@ class FreeAI(_ClientBase):
             router.observe_many((provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True))
         else:
             pools = self._pools()
-        plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline)
+        plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline, max_wait)
         self._observe_warmups(warmups)
         return plan
 
@@ -429,10 +561,15 @@ class FreeAI(_ClientBase):
         )
 
     def _stream(
-        self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None
+        self,
+        request: Request,
+        max_attempts: int | None,
+        deadline: float | None,
+        first_token_timeout: float | None,
+        max_wait: float | None = None,
     ) -> Generator[StreamChunk, None, None]:
         router = self._router
-        plan = self._plan(request, max_attempts, deadline)
+        plan = self._plan(request, max_attempts, deadline, max_wait)
         token_timeout = first_token_timeout if first_token_timeout is not None else router.first_token_timeout
         while True:
             mark = self._mark()

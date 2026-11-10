@@ -35,17 +35,21 @@ def mistral(api_key: str | None = None, **kwargs: Any) -> Mistral:
 class Preset:
     """A provider ``FreeAI.from_env()`` can build.
 
-    It is enabled when every ``env`` variable is set, or, for ``keyless`` presets, when the caller
-    opts into anonymous access with ``include_keyless=True``.
+    It is enabled when every ``env`` variable is set. A ``keyless`` preset also works without a key:
+    when the caller asks for anonymous access (``include_keyless=True``), or without being asked if
+    it is a ``keyless_default``. That is reserved for platforms that state they do not train on
+    prompts, because it sends prompts to a third party the caller has no account with.
     """
 
     env: tuple[str, ...]
     factory: Callable[[], Provider]
     tier: Tier
     keyless: bool = False
+    keyless_default: bool = False
 
 
-# Order is the default priority: providers with their own capacity first, gateways after.
+# The order ``strategy="priority"`` tries them in; the default ``"quota"`` only falls back to it between
+# candidates whose quota costs the same.
 PRESETS: dict[str, Preset] = {
     "openrouter": Preset(("OPENROUTER_API_KEY",), OpenRouter, "free"),
     "groq": Preset(("GROQ_API_KEY",), Groq, "free"),
@@ -56,25 +60,32 @@ PRESETS: dict[str, Preset] = {
     "nvidia": Preset(("NVIDIA_API_KEY",), NVIDIA, "free"),
     "kilo": Preset(("KILO_API_KEY",), Kilo, "free", keyless=True),
     "requesty": Preset(("REQUESTY_API_KEY",), Requesty, "free"),
-    "ovh": Preset((), OVH, "free", keyless=True),
+    "ovh": Preset((), OVH, "free", keyless=True, keyless_default=True),  # states it never trains on prompts
     "cohere": Preset(("COHERE_API_KEY",), Cohere, "trial"),
     "cerebras": Preset(("CEREBRAS_API_KEY",), Cerebras, "trial"),
     "mistral": Preset(("MISTRAL_API_KEY",), Mistral, "paid"),
 }
 
 
-def build_from_env(tiers: Iterable[Tier], include_keyless: bool) -> list[Provider]:
-    """Providers for every preset whose environment variables are set (see ``from_env``)."""
+def build_from_env(tiers: Iterable[Tier], include_keyless: bool | None = None) -> list[Provider]:
+    """Providers for every preset whose environment variables are set (see ``from_env``).
+
+    ``include_keyless`` decides which presets are also used without a key: None (the default) those
+    that are a ``keyless_default`` (OVHcloud), True all of them (Kilo too), False none.
+    """
     allowed = set(tiers)
     providers: list[Provider] = []
     for preset in PRESETS.values():
         if preset.tier not in allowed:
             continue
         keyed = bool(preset.env) and all(os.environ.get(name) for name in preset.env)
-        if keyed or (preset.keyless and include_keyless):
+        anonymous = preset.keyless and (preset.keyless_default if include_keyless is None else include_keyless)
+        if keyed or anonymous:
             providers.append(preset.factory())
     if not providers:
         names = sorted({name for p in PRESETS.values() if p.tier in allowed for name in p.env})
-        hint = "" if include_keyless else " (or pass include_keyless=True for anonymous endpoints)"
+        hint = ""
+        if include_keyless is False:
+            hint = " (or leave include_keyless unset to use OVHcloud's anonymous endpoints, True for Kilo's too)"
         raise FreeAIError(f"no provider API key found; set one of: {', '.join(names)}{hint}")
     return providers

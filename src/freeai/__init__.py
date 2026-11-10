@@ -39,7 +39,7 @@ from .providers import (
 )
 from .retry import RetryBudget
 from .state import MemoryStore, SQLiteStore, StateStore
-from .types import Attempt, ChatResponse, ModelInfo, Requirements, StreamChunk
+from .types import Attempt, CatalogDrift, ChatResponse, ModelInfo, Requirements, StreamChunk
 
 __all__ = [
     "DEFAULT_EXCLUDE",
@@ -50,6 +50,7 @@ __all__ = [
     "AsyncFreeAI",
     "Attempt",
     "BillingWarning",
+    "CatalogDrift",
     "Cerebras",
     "ChatResponse",
     "Cloudflare",

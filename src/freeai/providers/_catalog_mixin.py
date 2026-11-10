@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from .._http import HTTPError, logger
 from ..errors import FreeAIError
-from ..types import ModelInfo
+from ..types import CatalogDrift, ModelInfo
 from ._catalog import _catalog_items
 
 _STALE_CATALOG_RETRY = 60.0
@@ -101,6 +101,41 @@ class CatalogMixin:
     def invalidate(self) -> None:
         """Force rediscovery on the next ``list_models`` call."""
         self._catalog_at = -math.inf
+
+    def catalog_drift(self) -> CatalogDrift | None:
+        """Compare the pinned models with the platform's catalog; None when nothing is pinned.
+
+        One read-only ``GET /models``. It changes nothing about which models are used: it shows
+        where a pinned list has gone stale (models removed, models added since).
+        """
+        if self._static is None:
+            return None
+        try:
+            return self._drift(self._discover())
+        except (HTTPError, ValueError, KeyError, TypeError) as exc:
+            return self._drift_unknown(exc)
+
+    async def acatalog_drift(self) -> CatalogDrift | None:
+        if self._static is None:
+            return None
+        try:
+            return self._drift(await self._adiscover())
+        except (HTTPError, ValueError, KeyError, TypeError) as exc:
+            return self._drift_unknown(exc)
+
+    def _drift(self, listed: list[ModelInfo]) -> CatalogDrift:
+        pinned = tuple(model.id for model in self._static or ())
+        live = [model.id for model in listed]
+        return CatalogDrift(
+            self.name,
+            pinned,
+            missing=tuple(model_id for model_id in pinned if model_id not in set(live)),
+            unpinned=tuple(sorted(set(live) - set(pinned))),
+        )
+
+    def _drift_unknown(self, exc: Exception) -> CatalogDrift:
+        pinned = tuple(model.id for model in self._static or ())
+        return CatalogDrift(self.name, pinned, error=f"{type(exc).__name__}: {exc}")
 
     def catalog_may_fetch(self) -> bool:
         """True when the next :meth:`models_snapshot` may perform network I/O."""

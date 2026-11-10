@@ -43,6 +43,8 @@ NVIDIA_FREE_MODELS = (
 )
 SAMBANOVA_FREE_MODELS = ("gpt-oss-120b", "Meta-Llama-3.3-70B-Instruct", "gemma-4-31B-it")
 COHERE_TRIAL_MODELS = ("command-a-plus-05-2026", "command-a-03-2025", "command-r-plus-08-2024")
+# The last three were found by ``freeai audit`` and answered an anonymous request each on 2026-11-10,
+# every one with its own 2 per minute.
 OVH_ANONYMOUS_MODELS = (
     "Qwen3.8-27B",
     "gpt-oss-120b",
@@ -50,6 +52,9 @@ OVH_ANONYMOUS_MODELS = (
     "Qwen3.5-397B-A17B",
     "Meta-Llama-3_3-70B-Instruct",
     "Mistral-Small-3.2-24B-Instruct-2506",
+    "Qwen3.6-27B",
+    "Qwen2.5-VL-72B-Instruct",
+    "Qwen3.5-9B",
 )
 _ZAI_RESET_RE = re.compile(r"reset at (\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}(?::\d{2})?)")
 
@@ -65,6 +70,7 @@ class Cloudflare(Provider):
     tier: Tier = "free"
     trains_on_prompts = False
     key_env = "CLOUDFLARE_API_TOKEN"
+    uncounted: Window | None = "day"  # the neurons: their cost per request depends on model and length
     default_models = CLOUDFLARE_FREE_MODELS
     default_limits = (rpm(300, source="developers.cloudflare.com/workers-ai/platform/limits", last_verified=_VERIFIED),)
     business_codes: ClassVar[Mapping[str, Verdict]] = {
@@ -107,6 +113,7 @@ class ZAI(Provider):
     tier: Tier = "free"
     key_env = "ZAI_API_KEY"
     reset_tz = "Asia/Shanghai"
+    uncounted: Window | None = "day"  # the usage limit behind 1308/1310; its size and window are unpublished
     default_models = ZAI_FREE_MODELS
     max_concurrency = 1
     business_codes: ClassVar[Mapping[str, Verdict]] = {
@@ -165,6 +172,8 @@ class Kilo(Provider):
         super().__init__(name, base_url, api_key=api_key, keyless=True, **kwargs)
         if not self.api_key and "limits" not in kwargs:
             self.limits.append(rph(200, scope="provider", source="kilo.ai/docs/gateway", last_verified=_VERIFIED))
+        elif self.api_key and "uncounted" not in kwargs:
+            self.uncounted = "hour"  # a key's allowance is not published; the anonymous one is hourly
 
     def _parse_catalog(self, body: Any) -> list[ModelInfo]:
         models: list[ModelInfo] = []
@@ -219,7 +228,9 @@ class NVIDIA(Provider):
     trains_on_prompts = True
     key_env = "NVIDIA_API_KEY"
     default_models = NVIDIA_FREE_MODELS
-    default_limits = (rpm(40, scope="provider", source="forums.developer.nvidia.com", last_verified=_VERIFIED),)
+    default_limits = (
+        rpm(40, scope="provider", source="forums.developer.nvidia.com", last_verified=_VERIFIED, estimate=True),
+    )
 
     def __init__(
         self,

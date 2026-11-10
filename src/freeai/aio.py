@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from contextlib import aclosing
@@ -23,7 +24,7 @@ from ._core import (
 from .client import _NO_COST, _POLL_SECONDS, _ClientBase, _read_version
 from .errors import FailureKind, FreeAIError, OutputLimitError, ProviderFailure, StreamInterrupted
 from .providers import Provider
-from .types import ChatResponse, ModelInfo, Requirements, StreamChunk
+from .types import CatalogDrift, ChatResponse, ModelInfo, Requirements, StreamChunk
 
 __all__ = ["AsyncFreeAI"]
 
@@ -151,11 +152,12 @@ class AsyncFreeAI(_ClientBase):
         min_context: int | None = None,
         max_attempts: int | None = None,
         deadline: float | None = None,
+        max_wait: float | None = None,
         **params: Any,
     ) -> ChatResponse:
         router = self._router
         request = self._request(messages, system, model, require, min_context, params)
-        plan = await self._plan(request, max_attempts, deadline)
+        plan = await self._plan(request, max_attempts, deadline, max_wait)
         while True:
             mark = self._mark()
             step = plan.next()
@@ -211,12 +213,71 @@ class AsyncFreeAI(_ClientBase):
         min_context: int | None = None,
         max_attempts: int | None = None,
         deadline: float | None = None,
+        max_wait: float | None = None,
         first_token_timeout: float | None = None,
         **params: Any,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Async iterator of chunks; arguments are validated before the first ``await``."""
         request = self._request(messages, system, model, require, min_context, params)
-        return self._stream(request, max_attempts, deadline, first_token_timeout)
+        return self._stream(request, max_attempts, deadline, first_token_timeout, max_wait)
+
+    async def batch(
+        self,
+        prompts: Iterable[Messages],
+        *,
+        concurrency: int = 8,
+        max_wait: float | None = math.inf,
+        on_result: Callable[[int, ChatResponse | FreeAIError], None] | None = None,
+        system: str | None = None,
+        model: str | Sequence[str] | None = None,
+        require: Iterable[str] = (),
+        min_context: int | None = None,
+        max_attempts: int | None = None,
+        deadline: float | None = None,
+        **params: Any,
+    ) -> list[ChatResponse | FreeAIError]:
+        """Answer many prompts, waiting for quota instead of giving up when it runs out.
+
+        The asyncio version of :meth:`FreeAI.batch`: up to ``concurrency`` requests run or wait at
+        a time, and the result has the response or the :class:`FreeAIError` of each prompt in the
+        order given. Cancelling the call, or any other exception, cancels the requests that are
+        still running or waiting.
+        """
+        if concurrency < 1:
+            raise ValueError("concurrency must be >= 1")
+        items = list(prompts)  # before any request starts: an iterable that fails leaves nothing running
+        needs = tuple(require)
+        slots = asyncio.Semaphore(concurrency)
+
+        async def answer(index: int) -> ChatResponse | FreeAIError:
+            result: ChatResponse | FreeAIError
+            async with slots:
+                try:
+                    result = await self.chat(
+                        items[index],
+                        system=system,
+                        model=model,
+                        require=needs,
+                        min_context=min_context,
+                        max_attempts=max_attempts,
+                        deadline=deadline,
+                        max_wait=max_wait,
+                        **params,
+                    )
+                except FreeAIError as exc:
+                    result = exc
+            if on_result is not None:
+                on_result(index, result)
+            return result
+
+        tasks = [asyncio.create_task(answer(index)) for index in range(len(items))]
+        try:
+            return list(await asyncio.gather(*tasks))
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     async def models(
         self,
@@ -231,6 +292,11 @@ class AsyncFreeAI(_ClientBase):
                 provider.invalidate()
         requirements = Requirements(frozenset(require), frozenset(input_modalities), min_context)
         return self._router.order(Request({}, requirements, (), _NO_COST), await self._pools(), turn=0)
+
+    async def audit(self) -> list[CatalogDrift]:
+        """Where each pinned model list differs from the platform's catalog (read-only)."""
+        drifts = await asyncio.gather(*(provider.acatalog_drift() for provider in self.providers))
+        return [self._chat_models_only(drift) for drift in drifts if drift is not None]
 
     async def aclose(self) -> None:
         for provider in self.providers:
@@ -254,7 +320,9 @@ class AsyncFreeAI(_ClientBase):
         results = await asyncio.gather(*(fetch(p) for p in self.providers))
         return self._pools_from(zip(self.providers, results, strict=True))
 
-    async def _plan(self, request: Request, max_attempts: int | None, deadline: float | None) -> Plan:
+    async def _plan(
+        self, request: Request, max_attempts: int | None, deadline: float | None, max_wait: float | None = None
+    ) -> Plan:
         router = self._router
         # Overlap account-quota HTTP with catalog discovery on the first plan.
         early = router.claim_warmups(p.name for p in self.providers if p.quota_may_fetch())
@@ -266,7 +334,7 @@ class AsyncFreeAI(_ClientBase):
             router.observe_many((provider.name, "*", snaps) for provider, snaps in zip(early, snapshots, strict=True))
         else:
             pools = await self._pools()
-        plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline)
+        plan, warmups = self._plan_after_pools(request, pools, max_attempts, deadline, max_wait)
         await self._observe_warmups(warmups)
         return plan
 
@@ -283,10 +351,15 @@ class AsyncFreeAI(_ClientBase):
         )
 
     async def _stream(
-        self, request: Request, max_attempts: int | None, deadline: float | None, first_token_timeout: float | None
+        self,
+        request: Request,
+        max_attempts: int | None,
+        deadline: float | None,
+        first_token_timeout: float | None,
+        max_wait: float | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         router = self._router
-        plan = await self._plan(request, max_attempts, deadline)
+        plan = await self._plan(request, max_attempts, deadline, max_wait)
         token_timeout = first_token_timeout if first_token_timeout is not None else router.first_token_timeout
         while True:
             mark = self._mark()

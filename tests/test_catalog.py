@@ -1,8 +1,11 @@
+import asyncio
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from freeai import FreeAI, OpenRouter, Provider
+import httpx
+
+from freeai import AsyncFreeAI, CatalogDrift, FreeAI, Groq, OpenRouter, Provider
 from freeai.types import ModelInfo
 
 from .conftest import FakeServer
@@ -159,3 +162,62 @@ def test_sync_warmups_refresh_quota_in_parallel():
     ai._observe_warmups(warmups)
     elapsed = time.perf_counter() - started
     assert elapsed < delay * 1.7
+
+
+def _listing(*ids: str) -> httpx.Client:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/models")
+        return httpx.Response(200, json={"data": [{"id": model_id} for model_id in ids]})
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_audit_reports_where_a_pinned_list_went_stale(clock):
+    live = ("openai/gpt-oss-120b", "qwen/qwen3.8-27b", "new/model-1", "whisper-large-v3", "Qwen3Guard-Gen-8B")
+    groq = Groq(api_key="k", http_client=_listing(*live))
+    discovering = OpenRouter(api_key="sk-test", http_client=FakeServer().client())
+    ai = FreeAI([discovering, groq], clock=clock)
+
+    assert ai.audit() == [
+        CatalogDrift(
+            "groq",
+            pinned=("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"),
+            missing=("openai/gpt-oss-20b",),
+            unpinned=("new/model-1",),  # speech and guard models are not chat candidates
+        )
+    ]
+    assert [m.id for m in groq.list_models()] == list(groq.catalog_drift().pinned)  # routing still uses the pins
+
+
+def test_audit_survives_a_catalog_it_cannot_read(clock):
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "nope"})
+
+    groq = Groq(api_key="k", http_client=httpx.Client(transport=httpx.MockTransport(refuse)))
+    (drift,) = FreeAI(groq, clock=clock).audit()
+    assert (drift.missing, drift.unpinned, drift.changed) == ((), (), False)
+    assert "403" in (drift.error or "")
+
+
+def test_async_audit_and_cli(clock, capsys, monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "openai/gpt-oss-120b"}, {"id": "new/model-1"}]})
+
+    async def main() -> list[CatalogDrift]:
+        groq = Groq(api_key="k", async_http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        async with AsyncFreeAI(groq) as ai:
+            return await ai.audit()
+
+    (drift,) = asyncio.run(main())
+    assert drift.missing == ("openai/gpt-oss-20b", "qwen/qwen3.8-27b")
+    assert drift.unpinned == ("new/model-1",)
+
+    from freeai import __main__ as cli
+
+    groq = Groq(api_key="k", http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(cli.FreeAI, "from_env", classmethod(lambda cls, **kwargs: FreeAI(groq)))
+    assert cli.main(["audit"]) == 1  # a pinned model is gone
+    out = capsys.readouterr().out
+    assert "groq: 3 pinned, differs from the catalog" in out
+    assert "no longer listed: openai/gpt-oss-20b, qwen/qwen3.8-27b" in out
+    assert "listed but not pinned (not shown to be free): new/model-1" in out

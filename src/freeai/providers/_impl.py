@@ -94,6 +94,10 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
     # platform adds to every prompt when it counts that too.
     prompt_overhead_tokens: int = 0
     output_reserve_tokens: int = 0  # held on output-token windows until usage says what was spent
+    # Window of an allowance the SDK cannot count because its size or unit is unknown (Cloudflare's
+    # daily neurons). No number is declared, so nothing is held back; ``strategy="quota"`` only
+    # treats the provider as scarce until that window is over instead of as unlimited.
+    uncounted: Window | None = None
 
     def __init__(
         self,
@@ -117,6 +121,7 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
         trains_on_prompts: bool | None = None,
         drop_params: Iterable[str] | None = None,
         reset_tz: str | None = None,
+        uncounted: Window | None = None,
     ) -> None:
         self.name = name
         self.base_url = base_url.rstrip("/")
@@ -133,6 +138,8 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
             self.reset_tz = reset_tz
         if max_concurrency is not None:
             self.max_concurrency = max_concurrency
+        if uncounted is not None:
+            self.uncounted = uncounted
         declared = list(self.default_limits if limits is None else limits)
         if rpm is not None:
             declared.append(Limit(rpm, "minute", scope="provider", source="rpm argument"))
