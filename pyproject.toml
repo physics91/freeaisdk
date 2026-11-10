@@ -38,7 +38,7 @@ otel = ["opentelemetry-api>=1.30"]
 freeai = "freeai.__main__:main"
 
 [build-system]
-requires = ["uv_build>=0.9.28,<0.10.0"]  # match the installed uv; bump both together (uv 0.9 cannot unpack uv_build 0.13 sdists)
+requires = ["uv_build>=0.9.28,<0.14.0"]  # match the installed uv; bump both together (uv 0.9 cannot unpack uv_build 0.13 sdists)
 build-backend = "uv_build"
 
 # Distribution name is free-llm-sdk; import package stays freeai
