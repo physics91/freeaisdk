@@ -93,6 +93,7 @@ class Provider(CatalogMixin, TransportMixin, RequestMixin, QuotaMixin):
     # max_tokens (512 when the caller sets none), plus the chat template and system text the
     # platform adds to every prompt when it counts that too.
     prompt_overhead_tokens: int = 0
+    output_reserve_tokens: int = 0  # held on output-token windows until usage says what was spent
 
     def __init__(
         self,
