@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from .._http import Headers
-from ..errors import FailureKind, Scope
-from ..limits import RateSnapshot, Window, rpd, rpm, tpd, tpm
+from ..errors import FailureKind, ProviderFailure, Scope
+from ..limits import RateSnapshot, Window, otpm, rpd, rpm, tpd, tpm
 from ._impl import _VERIFIED, Provider, Tier, Verdict
 
 GROQ_FREE_MODELS = ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b")
+_MEASURED = "2026-11-09"
+_LIMIT_REACHED_RE = re.compile(r"\((RPM|OTPM)\): Limit (\d+), Used (\d+)")
 
 
 def _without(message: Any, key: str) -> Any:
@@ -44,6 +47,17 @@ class Groq(Provider):
     requests without ``max_tokens`` got a 429 "Request too large" against it, while a request with
     ``max_tokens`` 1500 was accepted, so what triggers it is unknown. As Groq words it as a problem
     of the request, it skips the model for that request only.
+
+    The minute's request count works like the daily one, one back per whole 2 s since the last
+    accepted request with the remainder dropped, and a rejected request costs nothing and leaves that
+    clock alone (``reports/load-test/groq-rpm-refill-real.jsonl``). Sends at 1.5 s passed
+    ``x.x.x.x.``, 20 of 40; 16 sends at 3.5 s saved nothing for the burst after them. No header reports
+    this window, so a 429's body is the only reading, and the preset declares it ``whole``.
+
+    Output tokens per minute also have no header. They seem to refill continuously (the body's "try
+    again in" matches 1000 per minute) and Groq refuses a request when its count plus an estimate would
+    not fit. That estimate is not ``max_tokens``: it was 80 to 103 with ``max_tokens`` 256 on answers of
+    about 50 tokens, hence ``output_reserve_tokens``. Only qwen was seen with this limit.
     """
 
     tier: Tier = "free"
@@ -52,12 +66,14 @@ class Groq(Provider):
     reset_headers = ()
     header_windows: ClassVar[Mapping[str, Window]] = {"requests": "day", "tokens": "minute"}
     prompt_overhead_tokens = 80
+    output_reserve_tokens = 100
     default_models = GROQ_FREE_MODELS
     default_limits = (
-        rpm(30, source="console.groq.com/docs/rate-limits", last_verified=_VERIFIED),
+        rpm(30, whole=True, source="console.groq.com/docs/rate-limits", last_verified=_VERIFIED),
         rpd(1000, source="console.groq.com/docs/rate-limits", last_verified=_VERIFIED),
         tpm(8000, source="console.groq.com/docs/rate-limits", last_verified=_VERIFIED),
         tpd(200_000, source="console.groq.com/docs/rate-limits", last_verified=_VERIFIED),
+        otpm(1000, models=("qwen/qwen3.8-27b",), source="429 response bodies", last_verified=_MEASURED),
     )
     drop_params = frozenset({"logprobs", "logit_bias", "top_logprobs"})
 
@@ -80,6 +96,17 @@ class Groq(Provider):
 
     def rate_snapshots(self, headers: Mapping[str, str]) -> list[RateSnapshot]:
         return [dataclasses.replace(s, rolling=True) if s.per == "day" else s for s in super().rate_snapshots(headers)]
+
+    def classify(self, status: int, headers: Mapping[str, str], body: Any) -> ProviderFailure:
+        failure = super().classify(status, headers, body)
+        match = _LIMIT_REACHED_RE.search(failure.message) if status == 429 else None
+        if match:
+            limit, used = float(match[2]), float(match[3])
+            if match[1] == "RPM":
+                failure.snapshots.append(RateSnapshot("minute", "requests", limit, limit - used, whole=True))
+            else:
+                failure.snapshots.append(RateSnapshot("minute", "output_tokens", limit, limit - used))
+        return failure
 
     def _rate_limit_verdict(self, headers: Headers, error: dict[str, Any], text: str) -> Verdict:
         # "Request too large for model ... on tokens per minute (TPM)" or "... on output tokens per

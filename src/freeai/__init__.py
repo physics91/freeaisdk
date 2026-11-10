@@ -13,7 +13,7 @@ from .errors import (
     Scope,
     StreamInterrupted,
 )
-from .limits import Cost, Limit, RateSnapshot, per_month, rpd, rph, rpm, tpd, tph, tpm
+from .limits import Cost, Limit, RateSnapshot, otpm, per_month, rpd, rph, rpm, tpd, tph, tpm
 from .providers import (
     NVIDIA,
     OVH,
@@ -88,6 +88,7 @@ __all__ = [
     "gemini",
     "groq",
     "mistral",
+    "otpm",
     "per_month",
     "rpd",
     "rph",

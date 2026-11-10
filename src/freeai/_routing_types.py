@@ -73,7 +73,7 @@ def _learned_key(sid: str) -> str:
 
 
 _LEARNED_WINDOWS = frozenset({"minute", "hour", "day", "month"})
-_LEARNED_UNITS = frozenset({"requests", "tokens"})
+_LEARNED_UNITS = frozenset({"requests", "tokens", "output_tokens"})
 _LEARNED_SCOPES = frozenset({"model", "provider"})
 
 
@@ -101,6 +101,10 @@ def _covered(*groups: Iterable[RateSnapshot]) -> set[tuple[str, str]]:
 def _usage_number(value: Any) -> float | None:
     """Token counts from usage objects; JSON may send floats or numeric strings."""
     return _finite_float(value)
+
+
+def _output_tokens(usage: Mapping[str, Any] | None) -> float | None:
+    return _usage_number(usage.get("completion_tokens")) if isinstance(usage, Mapping) else None
 
 
 def _total_tokens(usage: Mapping[str, Any] | None) -> float | None:

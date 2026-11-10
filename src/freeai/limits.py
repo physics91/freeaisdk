@@ -36,7 +36,7 @@ from .cooldown import (
 from .retry import RetryBudget as RetryBudget
 
 Window = Literal["minute", "hour", "day", "month"]
-Unit = Literal["requests", "tokens"]
+Unit = Literal["requests", "tokens", "output_tokens"]
 LimitScope = Literal["model", "provider"]
 State = MutableMapping[str, Any]
 
@@ -52,6 +52,11 @@ _ROLLING_BY_DEFAULT = frozenset({"minute", "hour"})
 # this many seconds late, or a request sent exactly at the edge can land just before it. What was
 # left in the window when it started refilling is not affected, so bursts are unchanged.
 EDGE_MARGIN = 1.0
+# A window that gives quota back by whole intervals (see ``Limit.whole``) measures them between the
+# moments requests arrive, and arrival times vary too. Each request waits this much past an interval
+# or it can land just short of one. Unlike EDGE_MARGIN this is lost on every request at the limit, so
+# it stays small: on Groq, requests 2.1 s apart got no 429s through the SDK (measured 2026-11-09).
+WHOLE_MARGIN = 0.1
 _PENDING_PREFIX = "p:"  # reservations the platform has not accepted yet, keyed by quota key
 
 
@@ -66,6 +71,11 @@ class Limit:
     provider's ``reset_tz`` boundary. Response headers can override this per window (see
     :class:`RateSnapshot`). ``models`` restricts the limit to matching model ids (globs).
     ``source`` and ``last_verified`` record where the number came from, since free limits change.
+
+    ``whole`` is for a platform that gives one back per whole interval (``per`` / ``amount``) since
+    the last request it accepted, and drops the remainder when it accepts the next one. Such a window
+    stays empty under steady traffic instead of catching up after a late request: Groq's 30 per
+    minute lets requests through only when they are 2 s apart, and regains none during a burst.
     """
 
     amount: float
@@ -75,6 +85,11 @@ class Limit:
     models: tuple[str, ...] | None = None
     source: str | None = None
     last_verified: str | None = None
+    whole: bool = False
+
+    def __post_init__(self) -> None:
+        if self.whole and self.per not in _WINDOW_SECONDS:
+            raise ValueError(f"whole needs a window with a fixed length, not per {self.per}")
 
     def applies_to(self, model_id: str) -> bool:
         return self.models is None or any(rx.match(model_id) is not None for rx in _compiled_globs(self.models))
@@ -108,6 +123,11 @@ def tpd(amount: float, **kwargs: Any) -> Limit:
     return Limit(amount, "day", "tokens", **kwargs)
 
 
+def otpm(amount: float, **kwargs: Any) -> Limit:
+    """Output tokens per minute, for platforms that limit them apart from total tokens."""
+    return Limit(amount, "minute", "output_tokens", **kwargs)
+
+
 def per_month(amount: float, unit: Unit = "requests", **kwargs: Any) -> Limit:
     return Limit(amount, "month", unit, **kwargs)
 
@@ -130,7 +150,8 @@ class RateSnapshot:
     windows it replaces the calendar boundary. ``rolling`` says how the platform counts: True for a
     window that refills over time (Groq's daily requests), False for one that resets all at once
     when ``reset_in`` runs out (OVHcloud's minute), None for the default of ``per`` (minute and hour
-    roll, day and month are fixed).
+    roll, day and month are fixed). ``whole`` says the window gives quota back by whole intervals
+    (see :class:`Limit`), which also decides for a limit that was declared without saying so.
     """
 
     per: Window
@@ -140,6 +161,7 @@ class RateSnapshot:
     scope: LimitScope = "model"
     reset_in: float | None = None
     rolling: bool | None = None
+    whole: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,18 +170,20 @@ class Cost:
 
     requests: float = 1.0
     tokens: float = 0.0
+    output_tokens: float = 0.0
 
     def of(self, unit: Unit) -> float:
-        return self.requests if unit == "requests" else self.tokens
+        if unit == "requests":
+            return self.requests
+        return self.tokens if unit == "tokens" else self.output_tokens
 
 
 def quota_ready_at(
     tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str
 ) -> float:
     ready = now
-    requests, tokens = cost.requests, cost.tokens
     for limit in limits:
-        amount = requests if limit.unit == "requests" else tokens
+        amount = cost.of(limit.unit)
         if amount > 0 and math.isfinite(amount) and limit.applies_to(model_id):
             ready = max(ready, _window_ready(limit, tx.get(limit.key(provider, model_id)), amount, now, tz))
     return ready
@@ -170,9 +194,8 @@ def quota_charge(
 ) -> list[tuple[str, float]]:
     """Charge windows for ``cost``; return ``(quota_key, amount)`` pairs actually charged."""
     charges: list[tuple[str, float]] = []
-    requests, tokens = cost.requests, cost.tokens
     for limit in limits:
-        amount = requests if limit.unit == "requests" else tokens
+        amount = cost.of(limit.unit)
         if amount > 0 and math.isfinite(amount) and limit.applies_to(model_id):
             key = limit.key(provider, model_id)
             tx[key] = _window_add(limit, tx.get(key), amount, now, tz)
@@ -209,6 +232,9 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
     if not math.isfinite(snapshot.limit) or snapshot.limit <= 0:
         return limit
     key = limit.key(provider, model_id)
+    if snapshot.whole:
+        tx[key] = {"tokens": max(0.0, snapshot.remaining), "last": now, "amount": snapshot.limit}
+        return limit
     seen = max(0.0, snapshot.limit - snapshot.remaining)
     requests = limit.unit == "requests"
     old = _quota_state(tx.get(key))  # what the last reading (and later charges) left
@@ -363,6 +389,8 @@ def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) 
     capacity = limit.amount if capacity_n is None else capacity_n
     if capacity <= 0:
         return math.inf  # no allowance; never ready for a positive charge
+    if _whole(limit, state):
+        return _whole_ready(state, capacity, _WINDOW_SECONDS[limit.per] / capacity, amount, now)
     if _rolling(limit.per, state):
         period = _WINDOW_SECONDS[limit.per]
         interval = period / capacity
@@ -394,6 +422,8 @@ def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) ->
         if limit.per not in _ROLLING_BY_DEFAULT:
             added_zero["period"] = _period(limit.per, now, tz)
         return added_zero
+    if _whole(limit, state):
+        return _whole_add(state, capacity, _WINDOW_SECONDS[limit.per] / capacity, amount, now)
     if _rolling(limit.per, state):
         interval = _WINDOW_SECONDS[limit.per] / capacity
         tat_n = _quota_number(state.get("tat")) if state else None
@@ -420,6 +450,40 @@ def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) ->
     if until is not None:
         added["until"] = until
     return added
+
+
+def _whole(limit: Limit, state: dict[str, Any] | None) -> bool:
+    """Whether a window gives quota back by whole intervals; the platform's reading also decides."""
+    return limit.whole or (state is not None and "tokens" in state)
+
+
+def _whole_row(state: dict[str, Any] | None) -> tuple[float, float] | None:
+    """``(tokens, last)`` of a whole-interval window; any other row counts as a full window.
+
+    An older version's row holds at most a minute's count, and the first 429 corrects it.
+    """
+    tokens = _quota_number(state.get("tokens")) if state else None
+    last = _quota_number(state.get("last")) if state else None
+    return None if tokens is None or last is None else (tokens, last)
+
+
+def _whole_ready(state: dict[str, Any] | None, capacity: float, interval: float, amount: float, now: float) -> float:
+    row = _whole_row(state)
+    if row is None:
+        return now
+    tokens, last = row
+    missing = math.ceil(min(amount, capacity) - tokens)
+    return now if missing <= 0 else max(now, last + WHOLE_MARGIN + missing * interval)
+
+
+def _whole_add(
+    state: dict[str, Any] | None, capacity: float, interval: float, amount: float, now: float
+) -> dict[str, Any]:
+    tokens, last = _whole_row(state) or (capacity, now)
+    if amount < 0:  # a refund: the platform never saw this request, so its clock did not move
+        return {"tokens": min(capacity, tokens - amount), "last": last, "amount": capacity}
+    back = max(0, math.floor((now - last - WHOLE_MARGIN) / interval))
+    return {"tokens": max(0.0, min(capacity, tokens + back) - amount), "last": now, "amount": capacity}
 
 
 def _usable_quota_state(value: Any) -> dict[str, Any] | None:

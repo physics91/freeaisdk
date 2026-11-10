@@ -15,6 +15,7 @@ from ._routing_types import (
     Wait,
     _covered,
     _model_key,
+    _output_tokens,
     _provider_key,
     _total_tokens,
 )
@@ -31,6 +32,18 @@ from .types import Attempt, ModelInfo
 
 if TYPE_CHECKING:
     from ._core import Router
+
+
+def _settlement(spent: float | None, estimate: float, accepted: bool) -> float:
+    """What to add to a window's estimate when an attempt ends.
+
+    Settle to what was spent when known. After the platform accepted the attempt (stream headers),
+    keep the estimate if usage is missing so the window is not undercounted. Otherwise refund it
+    (refused / never accepted / transport).
+    """
+    if spent is not None:
+        return spent - estimate
+    return 0.0 if accepted else -estimate
 
 
 class Plan:
@@ -148,6 +161,9 @@ class Plan:
                 limits = router._limits(tx, provider, model.id)
                 if cost.tokens:
                     quota_adjust(tx, limits, sid, model.id, "tokens", -cost.tokens, now, provider.reset_tz)
+                if cost.output_tokens:
+                    refund = -cost.output_tokens
+                    quota_adjust(tx, limits, sid, model.id, "output_tokens", refund, now, provider.reset_tz)
                 if cost.requests:
                     quota_adjust(tx, limits, sid, model.id, "requests", -cost.requests, now, provider.reset_tz)
         router.changed()
@@ -195,21 +211,14 @@ class Plan:
                     )
                 else:
                     cooldown = 0.0
-                # Tokens: settle to usage when known. After the platform accepted the attempt
-                # (stream headers), keep the estimate if usage is missing so TPM is not undercounted.
-                # Otherwise refund the estimate (refused / never accepted / transport).
                 # Requests: stay charged once the platform may have counted them; undo only when the
                 # attempt never reached the platform (transport failure before any HTTP response).
                 cost = router.cost(provider, self.request)
-                used = _total_tokens(usage)
-                if used is not None:
-                    delta = used - cost.tokens
-                elif self._accepted:
-                    delta = 0.0
-                else:
-                    delta = -cost.tokens
+                delta = _settlement(_total_tokens(usage), cost.tokens, self._accepted)
+                output_delta = _settlement(_output_tokens(usage), cost.output_tokens, self._accepted)
                 limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
                 quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+                quota_adjust(tx, limits, sid, model.id, "output_tokens", output_delta, now, provider.reset_tz)
                 if not failure.reached and reservation.keys and cost.requests:
                     quota_adjust(tx, limits, sid, model.id, "requests", -cost.requests, now, provider.reset_tz)
                 router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots])
@@ -272,13 +281,12 @@ class Plan:
                 for key in (_model_key(sid, model.id), _provider_key(sid)):
                     if key in tx and cooldown_ready_at(tx, key) <= now:
                         del tx[key]  # recovered: reset the backoff (never cut a cooldown set meanwhile)
-                used = _total_tokens(usage)
-                if used is not None:
-                    limits = [
-                        lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered
-                    ]
-                    delta = used - router.cost(provider, self.request).tokens
-                    quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+                cost = router.cost(provider, self.request)
+                delta = _settlement(_total_tokens(usage), cost.tokens, True)
+                output_delta = _settlement(_output_tokens(usage), cost.output_tokens, True)
+                limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
+                quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
+                quota_adjust(tx, limits, sid, model.id, "output_tokens", output_delta, now, provider.reset_tz)
                 router._observe_tx(tx, provider.name, model.id, snapshots)
                 latency = now - started
                 router.health.record(model.key, True, latency)
