@@ -1,6 +1,6 @@
 [project]
 name = "free-llm-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Chat with free LLMs (OpenRouter and OpenAI-compatible free tiers) with automatic model failover and 429 avoidance"
 readme = "README.md"
 license = "MIT"

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-10
+
 ### Added
 
 - Agent-facing docs: root `llms.txt`, `docs/agent/guide.md`, and consumer skill
