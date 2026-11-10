@@ -41,10 +41,12 @@ class ProxyServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, ai: FreeAI, address: tuple[str, int], *, token: str | None = None) -> None:
+        if token is not None:
+            token = token.strip() or None
         if not token and not _is_loopback(address[0]):
             raise ValueError(f"refusing to listen on {address[0]} without a token: anyone could spend your quota")
         self.ai = ai
-        self.token = token or None
+        self.token = token
         self._token_bytes = None if self.token is None else self.token.encode()
         # Redact every non-trivial key; very short placeholders (1-3 chars) skip replace() to
         # avoid mangling ordinary error text when someone uses api_key="k" in tests.

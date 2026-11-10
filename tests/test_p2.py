@@ -335,6 +335,11 @@ def test_proxy_token_and_bind_policy(proxy, make_ai):
     assert httpx.get(f"{url}/models", headers={"Authorization": "Bearer s3cret"}).status_code == 200
     with pytest.raises(ValueError, match="without a token"):
         ProxyServer(make_ai(), ("0.0.0.0", 0))
+    for blank in ("", " ", "\t", "  \n"):
+        with pytest.raises(ValueError, match="without a token"):
+            ProxyServer(make_ai(), ("0.0.0.0", 0), token=blank)
+    # Whitespace-only token on loopback is treated as no token (open to local clients).
+    assert httpx.get(f"{proxy(token=' ').url}/models").status_code == 200
 
 
 def test_proxy_redacts_provider_keys(proxy):
