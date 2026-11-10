@@ -78,7 +78,8 @@ class TransportMixin:
         with self._client_lock:
             http = self._http
             if http is None:
-                http = Client(timeout=self._default_timeout(), limits=CONNECTION_LIMITS)
+                # Owned clients never follow redirects: Bearer tokens must not ride a 3xx.
+                http = Client(timeout=self._default_timeout(), limits=CONNECTION_LIMITS, follow_redirects=False)
                 self._http = http
             return http
 
@@ -86,7 +87,9 @@ class TransportMixin:
         with self._client_lock:
             ahttp = self._ahttp
             if ahttp is None:
-                ahttp = AsyncClient(timeout=self._default_timeout(), limits=CONNECTION_LIMITS)
+                ahttp = AsyncClient(
+                    timeout=self._default_timeout(), limits=CONNECTION_LIMITS, follow_redirects=False
+                )
                 self._ahttp = ahttp
             return ahttp
 
