@@ -6,8 +6,8 @@
 
 ### Changed
 
-- The PyPI distribution name is now `freeaisdk` (import package and CLI remain `freeai`).
-  The previous distribution name `freeai` is already taken on PyPI by an unrelated package.
+- The PyPI distribution name is `free-llm-sdk` (import package and CLI remain `freeai`).
+  `freeai` is taken and `freeaisdk` fails PyPI's similarity check against `free-ai-sdk`.
 
 - The default `strategy` is now `"quota"` (was `"priority"`). Among the candidates that can be sent
   now, the one whose quota comes back soonest is used, so allowances that refill every minute are

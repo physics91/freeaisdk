@@ -12,14 +12,14 @@
 
 ## 설치
 
-PyPI 배포 이름은 `freeaisdk`입니다(`freeai`는 다른 패키지가 선점). import와 CLI는 `freeai`입니다.
+PyPI 배포 이름은 `free-llm-sdk`입니다(`freeai` / `freeaisdk`는 유사도 검사에 걸림). import와 CLI는 `freeai`입니다.
 
 ```bash
-uv add freeaisdk
-uv add "freeaisdk[otel]"          # OpenTelemetry 연동까지
-pip install freeaisdk
+uv add free-llm-sdk
+uv add "free-llm-sdk[otel]"       # OpenTelemetry 연동까지
+pip install free-llm-sdk
 
-# 로컬 경로 / 아직 배포 전
+# 로컬 경로
 uv add /path/to/freeaisdk
 uv add /path/to/freeaisdk --extra otel
 ```
@@ -333,7 +333,7 @@ from freeai.otel import instrument
 instrument(ai)   # 시도마다 GenAI 규약 span 하나 (gen_ai.provider.name, gen_ai.request.model, error.type ...)
 ```
 
-`opentelemetry-api`가 필요합니다(`freeaisdk[otel]`). GenAI 시맨틱 규약이 아직 Development 상태라 실험 기능입니다.
+`opentelemetry-api`가 필요합니다(`free-llm-sdk[otel]`). GenAI 시맨틱 규약이 아직 Development 상태라 실험 기능입니다.
 프롬프트와 응답 내용은 기록하지 않습니다. 로그는 `logging.getLogger("freeai")`로 나가며 기본 핸들러는 `NullHandler`입니다.
 
 ## 한계

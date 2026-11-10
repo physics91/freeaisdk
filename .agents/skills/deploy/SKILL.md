@@ -29,7 +29,7 @@ bootstrap intake. Validate against the repository root before selecting.
 
 | Detected Config | Platform | Entrypoint | Rollback | Verification | Default |
 |----------------|----------|------------|----------|--------------|---------|
-| `.github/workflows/publish.yml` + PyPI Trusted Publishing | PyPI via GitHub Release | `gh release create` triggers OIDC publish | Keep prior tag; manual yank/hotfix | `pypi.org/pypi/freeaisdk/<ver>/json` | `pypi-dry-run` |
+| `.github/workflows/publish.yml` + PyPI Trusted Publishing | PyPI via GitHub Release | `gh release create` triggers OIDC publish | Keep prior tag; manual yank/hotfix | `pypi.org/pypi/free-llm-sdk/<ver>/json` | `pypi-dry-run` |
 
 Sources (retrieved 2026-11-07): https://docs.pypi.org/trusted-publishers/using-a-publisher/ ;
 https://github.com/pypa/gh-action-pypi-publish ; project `publish.yml`.
@@ -63,7 +63,7 @@ PREVIOUS_TAG=v0.0.0
 ## Success Criteria
 
 - Dry-run: twine check passes and versioned files exist under `dist/`
-- Production: GitHub Release exists and PyPI JSON smoke for `freeaisdk==VERSION` succeeds
+- Production: GitHub Release exists and PyPI JSON smoke for `free-llm-sdk==VERSION` succeeds
 - Rollback guidance printed with previous tag retained
 
 ## Caveats

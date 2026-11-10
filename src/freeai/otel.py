@@ -1,4 +1,4 @@
-"""OpenTelemetry spans for every attempt (experimental; ``pip install "freeaisdk[otel]"``).
+"""OpenTelemetry spans for every attempt (experimental; ``pip install "free-llm-sdk[otel]"``).
 
 One CLIENT span per attempt, named ``chat {model}``, with the GenAI semantic-convention attributes.
 Those conventions are still in Development status, so the attribute names live only in this

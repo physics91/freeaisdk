@@ -1,5 +1,5 @@
 [project]
-name = "freeaisdk"
+name = "free-llm-sdk"
 version = "0.1.0"
 description = "Chat with free LLMs (OpenRouter and OpenAI-compatible free tiers) with automatic model failover and 429 avoidance"
 readme = "README.md"
@@ -39,7 +39,8 @@ freeai = "freeai.__main__:main"
 requires = ["uv_build>=0.9.28,<0.10.0"]  # match the installed uv; bump both together (uv 0.9 cannot unpack uv_build 0.13 sdists)
 build-backend = "uv_build"
 
-# Distribution name is freeaisdk; import package stays freeai (PyPI name collision).
+# Distribution name is free-llm-sdk; import package stays freeai
+# (PyPI blocks freeai / freeaisdk as too similar to FreeAI / free-ai-sdk).
 [tool.uv.build-backend]
 module-name = "freeai"
 

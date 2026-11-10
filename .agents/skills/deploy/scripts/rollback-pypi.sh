@@ -10,6 +10,6 @@ while [[ $# -gt 0 ]]; do
 done
 test -n "$PREVIOUS_TAG"
 echo "PyPI yank is manual on pypi.org for the bad version."
-echo "Keep consumers on ${PREVIOUS_TAG} / freeaisdk==${PREVIOUS_TAG#v}."
+echo "Keep consumers on ${PREVIOUS_TAG} / free-llm-sdk==${PREVIOUS_TAG#v}."
 echo "If needed, cut a hotfix release from a new patch tag after fixes."
 gh release view "$PREVIOUS_TAG" >/dev/null
