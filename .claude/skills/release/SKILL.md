@@ -70,7 +70,7 @@ git tag --list "v*"
 
 ## Caveats
 
-- CI workflow action tags are unpinned major tags; treat publish as high risk until pinned
+- CI/publish workflow actions are pinned by full commit SHA; treat major action upgrades as intentional PRs
 - Trusted Publisher must already be configured on PyPI for this repository
 
 ## Boundaries

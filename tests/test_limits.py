@@ -894,6 +894,7 @@ def test_provider_http_clients_allow_many_concurrent_streams():
     for client in (provider._client(), provider._async_client()):
         pool = client._transport._pool  # type: ignore[attr-defined]
         assert (pool._max_connections, pool._max_keepalive_connections) == (1000, 100)
+        assert client.follow_redirects is False
 
 
 def test_sqlite_corrupt_json_row_raises_keyerror_and_is_deleted(tmp_path):

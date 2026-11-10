@@ -1,0 +1,16 @@
+# Allow only known placeholders; do not blanket-allow tests/ or research_notes/.
+title = "freeaisdk"
+
+[allowlist]
+description = "Intentional test fixtures and env-var name placeholders in docs"
+
+regexes = [
+  '''(?i)sk-live-0123456789''',
+]
+
+stopwords = [
+  '''GEMINI_API_KEY''',
+  '''COHERE_API_KEY''',
+  '''AI_GATEWAY_API_KEY''',
+  '''CLOUDFLARE_ACCOUNT_ID''',
+]

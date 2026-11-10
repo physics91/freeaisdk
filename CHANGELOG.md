@@ -10,6 +10,18 @@
   Actions notices (stderr) without changing routing. Warns when only keyless presets are
   compared. `DEFAULT_EXCLUDE` also drops `*bge*`, `*stable-diffusion*`, and `*orpheus*` so
   embedding/image/TTS catalog noise is not reported as pin candidates.
+- CI/publish/catalog-audit GitHub Actions pinned to full commit SHAs (with version comments).
+- CI job `dependency-audit`: `pip-audit` against the locked runtime graph including the `otel` extra.
+- Dependabot weekly updates for `uv` and `github-actions` (minor/patch grouped).
+- CodeQL workflow for Python (`build-mode: none`) on push/PR and a weekly schedule.
+- CI job `secret-scan` (gitleaks) with `.gitleaks.toml` allowlisting only known test placeholders.
+- `SECURITY.md` with private advisory reporting and supported-version policy.
+
+### Fixed
+
+- `freeai serve`: redact provider API keys in proxy warning logs after the response has started.
+- Owned httpx clients set `follow_redirects=False` so Bearer tokens cannot follow a `3xx`.
+- Whitespace-only proxy tokens are treated as absent (non-loopback still requires a real token).
 
 ## [0.1.1] - 2026-11-10
 

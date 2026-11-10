@@ -1,5 +1,4 @@
-# Action major tags (checkout@v5, setup-uv@v6, *-artifact@v4) were not checked against the
-# marketplace when this local file was written; verify and pin to commit SHAs before enabling.
+# Actions are pinned by full commit SHA with a version comment; upgrades are intentional PRs.
 name: ci
 
 on:
@@ -18,8 +17,8 @@ jobs:
       matrix:
         python: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
@@ -27,3 +26,30 @@ jobs:
       - run: uv run --with ruff ruff format --check src tests
       - run: uv run --with mypy mypy
       - run: uv run --with opentelemetry-sdk pytest -q
+
+  # Runtime + otel extra from the lockfile (not dev / CI-only --with tools).
+  # Advisory DB freshness, network flakiness, and false positives are residual risks.
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: Audit locked runtime dependencies for known CVEs
+        run: |
+          uv export --frozen --no-emit-project --no-dev --extra otel -o /tmp/requirements-audit.txt
+          uv run --with pip-audit==2.10.1 pip-audit -r /tmp/requirements-audit.txt --progress-spinner off
+
+  # Hardcoded-secret scan; allowlist is .gitleaks.toml (test placeholders only).
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml

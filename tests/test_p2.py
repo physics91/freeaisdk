@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import socket
 import threading
 import time
@@ -334,6 +335,11 @@ def test_proxy_token_and_bind_policy(proxy, make_ai):
     assert httpx.get(f"{url}/models", headers={"Authorization": "Bearer s3cret"}).status_code == 200
     with pytest.raises(ValueError, match="without a token"):
         ProxyServer(make_ai(), ("0.0.0.0", 0))
+    for blank in ("", " ", "\t", "  \n"):
+        with pytest.raises(ValueError, match="without a token"):
+            ProxyServer(make_ai(), ("0.0.0.0", 0), token=blank)
+    # Whitespace-only token on loopback is treated as no token (open to local clients).
+    assert httpx.get(f"{proxy(token=' ').url}/models").status_code == 200
 
 
 def test_proxy_redacts_provider_keys(proxy):
@@ -344,6 +350,22 @@ def test_proxy_redacts_provider_keys(proxy):
     reply = httpx.post(f"{url}/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
     assert reply.status_code == 503
     assert "sk-live-0123456789" not in reply.text and "[redacted]" in reply.text
+
+
+def test_proxy_redacts_provider_keys_in_post_start_error_logs(make_ai, caplog):
+    # After headers are sent, _error only logs; that path must still redact keys.
+    ai = FreeAI(plain(FakeServer(), ["m1"], api_key="sk-live-0123456789"), max_wait=0)
+    server = ProxyServer(ai, ("127.0.0.1", 0))
+    try:
+        handler = object.__new__(server_module._Handler)
+        handler.server = server
+        handler._started = True
+        with caplog.at_level(logging.WARNING, logger="freeai"):
+            handler._error(500, "Incorrect API key provided: sk-live-0123456789", "server_error", "x")
+    finally:
+        server.server_close()
+    assert "sk-live-0123456789" not in caplog.text
+    assert "[redacted]" in caplog.text
 
 
 def test_proxy_skips_redacting_very_short_api_keys(proxy):

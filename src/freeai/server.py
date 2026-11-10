@@ -41,10 +41,12 @@ class ProxyServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, ai: FreeAI, address: tuple[str, int], *, token: str | None = None) -> None:
+        if token is not None:
+            token = token.strip() or None
         if not token and not _is_loopback(address[0]):
             raise ValueError(f"refusing to listen on {address[0]} without a token: anyone could spend your quota")
         self.ai = ai
-        self.token = token or None
+        self.token = token
         self._token_bytes = None if self.token is None else self.token.encode()
         # Redact every non-trivial key; very short placeholders (1-3 chars) skip replace() to
         # avoid mangling ordinary error text when someone uses api_key="k" in tests.
@@ -271,10 +273,11 @@ class _Handler(BaseHTTPRequestHandler):
         headers: Mapping[str, str] | None = None,
         detail: dict[str, Any] | None = None,
     ) -> None:
+        message = self.server.redact(message)
         if self._started:
             logger.warning("proxy error after the response started: %s", message)
             return
-        error: dict[str, Any] = {"message": self.server.redact(message), "type": kind, "code": code}
+        error: dict[str, Any] = {"message": message, "type": kind, "code": code}
         if detail:
             error["x_freeai"] = detail
         self._json(status, {"error": error}, headers)
