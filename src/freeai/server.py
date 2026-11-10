@@ -271,10 +271,11 @@ class _Handler(BaseHTTPRequestHandler):
         headers: Mapping[str, str] | None = None,
         detail: dict[str, Any] | None = None,
     ) -> None:
+        message = self.server.redact(message)
         if self._started:
             logger.warning("proxy error after the response started: %s", message)
             return
-        error: dict[str, Any] = {"message": self.server.redact(message), "type": kind, "code": code}
+        error: dict[str, Any] = {"message": message, "type": kind, "code": code}
         if detail:
             error["x_freeai"] = detail
         self._json(status, {"error": error}, headers)
