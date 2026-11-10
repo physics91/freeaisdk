@@ -14,6 +14,7 @@
 - CI job `dependency-audit`: `pip-audit` against the locked runtime graph including the `otel` extra.
 - Dependabot weekly updates for `uv` and `github-actions` (minor/patch grouped).
 - CodeQL workflow for Python (`build-mode: none`) on push/PR and a weekly schedule.
+- CI job `secret-scan` (gitleaks) with `.gitleaks.toml` allowlisting only known test placeholders.
 - `SECURITY.md` with private advisory reporting and supported-version policy.
 
 ### Fixed
