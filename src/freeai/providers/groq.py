@@ -29,7 +29,8 @@ class Groq(Provider):
     ``x-ratelimit-*-requests`` headers describe the *daily* window and ``*-tokens`` the minute
     window; they overwrite the local counters when a request is accepted. Neither resets at a
     calendar boundary: ``x-ratelimit-reset-requests`` is 86.4 s per request used today. Measured on
-    2026-11-06 (``reports/load-test/groq-sequence-real.jsonl``, ``groq-daily-refill-real.jsonl``),
+    2026-11-06 (``docs/research/2026-11-06-chat-app-load-test/data/groq-sequence-real.jsonl``,
+    ``docs/research/2026-11-06-chat-app-load-test/data/groq-daily-refill-real.jsonl``),
     the daily count gets one request back per whole 86.4 s since the previous request, and the
     remainder is dropped when a request arrives: requests 13 s apart got nothing back, requests
     300 s apart always got 3. Under steady traffic the daily count therefore does not refill. The
@@ -39,7 +40,7 @@ class Groq(Provider):
 
     Accepting a request pre-charges its prompt (chat template included) plus ``max_tokens`` against
     the minute window and refunds the unused output when it ends. Measured on 2026-11-06 on the
-    three free models (``reports/load-test/groq-reserve-probe.jsonl``): the template added 15 to 74
+    three free models (``docs/research/2026-11-06-chat-app-load-test/data/groq-reserve-probe.jsonl``): the template added 15 to 74
     tokens to a short prompt, hence ``prompt_overhead_tokens``. Without ``max_tokens`` the output
     reserve was 2 to 961 tokens: on gpt-oss mostly the length of a recent completion, on qwen with
     no pattern. It cannot be predicted, so the SDK keeps its generic 512; set ``max_tokens`` on Groq
@@ -50,7 +51,7 @@ class Groq(Provider):
 
     The minute's request count works like the daily one, one back per whole 2 s since the last
     accepted request with the remainder dropped, and a rejected request costs nothing and leaves that
-    clock alone (``reports/load-test/groq-rpm-refill-real.jsonl``). Sends at 1.5 s passed
+    clock alone (``docs/research/2026-11-06-chat-app-load-test/data/groq-rpm-refill-real.jsonl``). Sends at 1.5 s passed
     ``x.x.x.x.``, 20 of 40; 16 sends at 3.5 s saved nothing for the burst after them. No header reports
     this window, so a 429's body is the only reading, and the preset declares it ``whole``.
 

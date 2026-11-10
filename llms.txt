@@ -10,17 +10,21 @@ Use this index instead of scraping the full README when integrating the library.
 - Import: `from freeai import chat, FreeAI, AsyncFreeAI`
 - No key required for a first call (anonymous OVHcloud). Optional provider keys enable more free presets.
 - Do not install PyPI packages named `freeai` or `freeaisdk` for this project.
+- Default `from_env()` enables free tiers only. Trial/paid need explicit `tiers=...` and raise `BillingWarning`.
 
 ## Docs
 
+- [Doc map](https://raw.githubusercontent.com/physics91/freeaisdk/main/docs/README.md): where each document lives
 - [Agent guide](https://raw.githubusercontent.com/physics91/freeaisdk/main/docs/agent/guide.md): short integration contract for AI agents
 - [Consumer skill](https://raw.githubusercontent.com/physics91/freeaisdk/main/.agents/skills/freeai/SKILL.md): copy into another project's agent skills
 - [README](https://raw.githubusercontent.com/physics91/freeaisdk/main/README.md): full human documentation (Korean)
 - [Changelog](https://raw.githubusercontent.com/physics91/freeaisdk/main/CHANGELOG.md): release notes
+- [Security](https://raw.githubusercontent.com/physics91/freeaisdk/main/SECURITY.md): vulnerability reporting
 
 ## Quick patterns
 
 - One-shot: `from freeai import chat; print(chat("..."))`
-- Client: `FreeAI.from_env()` / `AsyncFreeAI.from_env()`
+- Client: `FreeAI.from_env()` / `AsyncFreeAI.from_env()` (prefer context manager / `close()`)
 - OpenAI drop-in: `freeai serve` → `http://127.0.0.1:8787/v1` (client `max_retries=0`)
 - In-process OpenAI shape: `from freeai.compat import OpenAI`
+- Own keys only: `FreeAI.from_env(include_keyless=False)`

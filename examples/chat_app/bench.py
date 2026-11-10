@@ -6,7 +6,7 @@
     ... bench.py soak --rate 60 --duration 600                          # mock free tiers, one long run
     ... bench.py real --rates 6,12 --duration 120                       # REAL keyless providers (OVHcloud, Kilo)
 
-Results are appended as JSON lines to ``--out`` (default ``reports/load-test/results.jsonl``).
+Results are appended as JSON lines to ``--out`` (default ``docs/research/2026-11-06-chat-app-load-test/data/results.jsonl``).
 """
 
 from __future__ import annotations
@@ -214,7 +214,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--state-dir", help="directory for SQLite state files (default: a new temp dir)")
     parser.add_argument("--no-training", action="store_true", help="real bench: skip models that train on prompts")
-    parser.add_argument("--out", type=Path, default=HERE.parent.parent / "reports" / "load-test" / "results.jsonl")
+    parser.add_argument("--out", type=Path, default=HERE.parent.parent / "docs" / "research" / "2026-11-06-chat-app-load-test" / "data" / "results.jsonl")
     args = parser.parse_args()
 
     state_dir = Path(args.state_dir or tempfile.mkdtemp(prefix="freeai-bench-"))

@@ -80,7 +80,7 @@ GEMINI_LIMITS = {  # third-party numbers: Google no longer publishes free-tier l
 
 GROQ_TEMPLATE_TOKENS = {"openai/gpt-oss-120b": 74, "openai/gpt-oss-20b": 74, "qwen/qwen3.8-27b": 15}
 # Output reserve Groq pre-charged for requests without max_tokens, measured on 2026-11-06
-# (reports/load-test/groq-reserve-probe.jsonl and groq-sequence-real.jsonl). gpt-oss reserves were
+# (docs/research/2026-11-06-chat-app-load-test/data/groq-reserve-probe.jsonl and docs/research/2026-11-06-chat-app-load-test/data/groq-sequence-real.jsonl). gpt-oss reserves were
 # mostly the length of one of the model's recent completions; qwen's showed no pattern.
 # fmt: off
 _GPT_OSS_RESERVES = (  # both gpt-oss models; 16 and 394 were seen on 120b, the rest on 20b

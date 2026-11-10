@@ -1,6 +1,6 @@
 # 샘플 채팅앱과 부하 측정 도구
 
-freeai SDK(`AsyncFreeAI`)로 만든 스트리밍 웹 채팅앱입니다. 같은 앱을 실제 무료 공급자에 붙여 쓰거나, 무료 한도를 흉내 내는 mock 업스트림에 붙여 부하를 측정할 수 있습니다. 측정 결과는 [`reports/샘플 채팅앱 부하 측정.md`](../../reports/샘플%20채팅앱%20부하%20측정.md)에 있습니다.
+freeai SDK(`AsyncFreeAI`)로 만든 스트리밍 웹 채팅앱입니다. 같은 앱을 실제 무료 공급자에 붙여 쓰거나, 무료 한도를 흉내 내는 mock 업스트림에 붙여 부하를 측정할 수 있습니다. 측정 결과는 [`docs/research/2026-11-06-chat-app-load-test/report.md`](../../docs/research/2026-11-06-chat-app-load-test/report.md)에 있습니다.
 
 ## 구성
 

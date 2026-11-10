@@ -27,7 +27,7 @@ mock은 실제 공급자가 아니다. 응답 텍스트, 지연(첫 토큰까지
 - 닫힌 루프(`--users N`): 사용자 N명이 답을 끝까지 받고 바로 다음 메시지를 보낸다. 앱이 감당하는 최대 처리량을 잰다.
 - 열린 루프(`--rate R`): 분당 R건이 포아송 과정으로 도착한다. 답이 늦거나 거절돼도 도착률은 그대로라서, 제공 부하 대비 성공률을 잴 수 있다.
 
-측정 환경은 WSL2(Linux 6.6), 24코어, 62 GB RAM, Python 3.12.3, httpx 0.28.1(httpcore 1.0.9), Starlette 1.10.0, uvicorn 0.54.0(`[standard]`, uvloop 0.23.0)이다. 앱, mock, 부하 생성기가 한 머신에서 돌았다. 원본 결과는 `reports/load-test/`에 단계마다 JSON 한 줄로 남겼다.
+측정 환경은 WSL2(Linux 6.6), 24코어, 62 GB RAM, Python 3.12.3, httpx 0.28.1(httpcore 1.0.9), Starlette 1.10.0, uvicorn 0.54.0(`[standard]`, uvloop 0.23.0)이다. 앱, mock, 부하 생성기가 한 머신에서 돌았다. 원본 결과는 `docs/research/2026-11-06-chat-app-load-test/data/`에 단계마다 JSON 한 줄로 남겼다.
 
 | 파일 | 내용 | SHA-256 |
 | --- | --- | --- |

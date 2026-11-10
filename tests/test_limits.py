@@ -165,7 +165,7 @@ def test_groq_request_too_large_skips_the_model_for_that_request_only(server, cl
 
 
 def test_groq_daily_window_is_read_as_a_rolling_window():
-    # Headers recorded on 2026-11-06 (reports/load-test/groq-probe.jsonl): 2 used, 2 * 86.4 s to full.
+    # Headers recorded on 2026-11-06 (docs/research/2026-11-06-chat-app-load-test/data/groq-probe.jsonl): 2 used, 2 * 86.4 s to full.
     snapshots = Groq(api_key="k").rate_snapshots(
         {
             "x-ratelimit-limit-requests": "1000",
