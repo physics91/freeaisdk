@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-10
+
 ### Changed
 
 - The PyPI distribution name is now `freeaisdk` (import package and CLI remain `freeai`).
@@ -74,7 +76,3 @@
   answered an anonymous request with its own 2 per minute on 2026-11-10).
 - `Limit.whole` and `RateSnapshot.whole` for windows that give quota back by whole intervals.
 - `otpm()`, the `"output_tokens"` unit, `Cost.output_tokens` and `Provider.output_reserve_tokens`.
-
-## [0.1.0]
-
-- Alpha package aligned with pyproject.toml version 0.1.0.
