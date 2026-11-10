@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Agent-facing docs: root `llms.txt`, `docs/agent/guide.md`, and consumer skill
+  `.agents/skills/freeai/SKILL.md`, plus a short README box for AI agents.
+
 ## [0.1.0] - 2026-11-10
 
 ### Changed

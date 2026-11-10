@@ -1,0 +1,26 @@
+# freeai
+
+> Python SDK for free-tier LLMs with automatic model/provider failover and 429 avoidance. PyPI package `free-llm-sdk`; import and CLI name `freeai`.
+
+Use this index instead of scraping the full README when integrating the library.
+
+## Hard facts
+
+- Install: `uv add free-llm-sdk` or `pip install free-llm-sdk`
+- Import: `from freeai import chat, FreeAI, AsyncFreeAI`
+- No key required for a first call (anonymous OVHcloud). Optional provider keys enable more free presets.
+- Do not install PyPI packages named `freeai` or `freeaisdk` for this project.
+
+## Docs
+
+- [Agent guide](https://raw.githubusercontent.com/physics91/freeaisdk/main/docs/agent/guide.md): short integration contract for AI agents
+- [Consumer skill](https://raw.githubusercontent.com/physics91/freeaisdk/main/.agents/skills/freeai/SKILL.md): copy into another project's agent skills
+- [README](https://raw.githubusercontent.com/physics91/freeaisdk/main/README.md): full human documentation (Korean)
+- [Changelog](https://raw.githubusercontent.com/physics91/freeaisdk/main/CHANGELOG.md): release notes
+
+## Quick patterns
+
+- One-shot: `from freeai import chat; print(chat("..."))`
+- Client: `FreeAI.from_env()` / `AsyncFreeAI.from_env()`
+- OpenAI drop-in: `freeai serve` → `http://127.0.0.1:8787/v1` (client `max_retries=0`)
+- In-process OpenAI shape: `from freeai.compat import OpenAI`

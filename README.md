@@ -1,5 +1,11 @@
 # freeai
 
+> **For AI agents**  
+> Install `free-llm-sdk` (not `freeai` / `freeaisdk`). Import `freeai`.  
+> Fast path: `from freeai import chat; print(chat("..."))` — no API key required.  
+> Or `FreeAI.from_env()`, or `freeai serve` → `http://127.0.0.1:8787/v1` (`max_retries=0`).  
+> Details: [`llms.txt`](./llms.txt) · [`docs/agent/guide.md`](./docs/agent/guide.md) · [consumer skill](./.agents/skills/freeai/SKILL.md)
+
 여러 플랫폼의 무료 LLM을 `chat()` 한 번으로 쓰는 Python SDK입니다. 대상은 OpenRouter, Groq, Gemini, Cloudflare, Z.ai 등 무료 등급이 있는 OpenAI 호환 플랫폼입니다.
 지금 쓸 수 있는 무료 모델을 고르고, 한도를 미리 세어 429를 피합니다. 실패하면 원인에 맞게 그 모델이나 플랫폼을 쉬게 하고 다음 후보로 넘어갑니다.
 

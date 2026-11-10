@@ -2,6 +2,13 @@
 
 Project-local agent guidance for freeai.
 
+## Consuming this library (other projects)
+
+- Prefer the consumer skill `.agents/skills/freeai/SKILL.md`
+- Short contract: `docs/agent/guide.md`
+- Fetch index: `/llms.txt` (also at repo root on GitHub)
+- PyPI package is `free-llm-sdk`; import/CLI remain `freeai`
+
 ## DevOps
 - build: refer to `build` skill
 - test: refer to `test` skill

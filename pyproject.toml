@@ -28,6 +28,8 @@ Homepage = "https://github.com/physics91/freeaisdk"
 Repository = "https://github.com/physics91/freeaisdk"
 Issues = "https://github.com/physics91/freeaisdk/issues"
 Changelog = "https://github.com/physics91/freeaisdk/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/physics91/freeaisdk/blob/main/docs/agent/guide.md"
+"llms.txt" = "https://raw.githubusercontent.com/physics91/freeaisdk/main/llms.txt"
 
 [project.optional-dependencies]
 otel = ["opentelemetry-api>=1.30"]
