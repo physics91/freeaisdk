@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Scheduled GitHub Actions workflow `catalog-audit`: runs `freeai audit --fail-on-catalog-error`
+  daily (and on `workflow_dispatch`). Fails when a pinned model is missing or a configured
+  catalog cannot be read; reports `unpinned` catalog candidates in the Job Summary and as
+  Actions notices (stderr) without changing routing. Warns when only keyless presets are
+  compared. `DEFAULT_EXCLUDE` also drops `*bge*`, `*stable-diffusion*`, and `*orpheus*` so
+  embedding/image/TTS catalog noise is not reported as pin candidates.
+
 ## [0.1.1] - 2026-11-10
 
 ### Added

@@ -9,12 +9,14 @@ import logging
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from ._core import STRATEGIES
 from .client import FreeAI
 from .errors import FreeAIError
 from .state import SQLiteStore
+from .types import CatalogDrift
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -55,6 +57,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     audit = commands.add_parser("audit", help="compare pinned model lists with each platform's catalog")
     audit.add_argument("--json", action="store_true")
+    audit.add_argument(
+        "--fail-on-catalog-error",
+        action="store_true",
+        help="exit 1 when a platform catalog cannot be read (useful in CI with configured keys)",
+    )
 
     chat = commands.add_parser("chat", help="send one prompt")
     chat.add_argument("prompt")
@@ -104,7 +111,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             print(m.key)
                     return 0
                 if args.command == "audit":
-                    return _audit(ai, as_json=args.json)
+                    return _audit(
+                        ai,
+                        as_json=args.json,
+                        fail_on_catalog_error=args.fail_on_catalog_error,
+                    )
                 params: dict[str, Any] = {}
                 if args.max_tokens is not None:
                     params["max_tokens"] = args.max_tokens
@@ -128,9 +139,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             store.close()
 
 
-def _audit(ai: FreeAI, *, as_json: bool) -> int:
+def _audit(ai: FreeAI, *, as_json: bool, fail_on_catalog_error: bool = False) -> int:
     """Print where pinned model lists went stale. Exit 1 when a pinned model is gone."""
     drifts = ai.audit()
+    keyless_only = bool(ai.providers) and all(provider.keyless for provider in ai.providers)
     if as_json:
         print(json.dumps([dataclasses.asdict(drift) for drift in drifts], indent=2))
     else:
@@ -146,7 +158,105 @@ def _audit(ai: FreeAI, *, as_json: bool) -> int:
                 print(f"  no longer listed: {', '.join(drift.missing)}")
             if drift.unpinned:
                 print(f"  listed but not pinned (not shown to be free): {', '.join(drift.unpinned)}")
-    return 1 if any(drift.missing for drift in drifts) else 0
+    if keyless_only:
+        print(
+            "coverage: only keyless presets were compared; "
+            "set free-tier API key secrets to audit pinned Groq/Gemini/… lists",
+            file=sys.stderr,
+        )
+    _emit_github_audit(drifts, keyless_only=keyless_only)
+    if any(drift.missing for drift in drifts):
+        return 1
+    if fail_on_catalog_error and any(drift.error for drift in drifts):
+        return 1
+    return 0
+
+
+def audit_markdown(drifts: Sequence[CatalogDrift], *, keyless_only: bool = False) -> str:
+    """Maintainer-facing Markdown: missing fail signal, unpinned as review candidates only."""
+    lines = [
+        "## freeai audit",
+        "",
+        "Pinned lists stay unchanged. `missing` means update or drop a pin; `unpinned` is a catalog",
+        "candidate that still needs a manual free/quality check before pinning.",
+        "",
+    ]
+    if not drifts:
+        lines.append("No pinned providers were available to compare.")
+        return "\n".join(lines) + "\n"
+
+    missing_rows = [d for d in drifts if d.missing]
+    unpinned_rows = [d for d in drifts if d.unpinned]
+    error_rows = [d for d in drifts if d.error is not None]
+    ok_rows = [d for d in drifts if not d.changed and d.error is None]
+
+    lines.append(f"- providers compared: {len(drifts)}")
+    lines.append(f"- matching pins: {len(ok_rows)}")
+    lines.append(f"- missing pins: {sum(len(d.missing) for d in missing_rows)}")
+    lines.append(f"- unpinned candidates: {sum(len(d.unpinned) for d in unpinned_rows)}")
+    lines.append(f"- catalog read errors: {len(error_rows)}")
+    if keyless_only:
+        lines.append("- coverage: keyless only — add free-tier API key secrets to compare Groq/Gemini/… pins")
+    lines.append("")
+    lines.append("### Providers compared")
+    for drift in drifts:
+        if drift.error is not None:
+            state = f"catalog unread ({drift.error})"
+        elif drift.changed:
+            state = f"{len(drift.pinned)} pinned, {len(drift.missing)} missing, {len(drift.unpinned)} unpinned"
+        else:
+            state = f"{len(drift.pinned)} pinned, matches"
+        lines.append(f"- `{drift.provider}`: {state}")
+    lines.append("")
+
+    if missing_rows:
+        lines.append("### Missing (pinned, no longer listed)")
+        for drift in missing_rows:
+            lines.append(f"- `{drift.provider}`: {', '.join(f'`{m}`' for m in drift.missing)}")
+        lines.append("")
+    if unpinned_rows:
+        lines.append("### Unpinned candidates (listed, not pinned — do not auto-route)")
+        for drift in unpinned_rows:
+            lines.append(f"- `{drift.provider}`: {', '.join(f'`{m}`' for m in drift.unpinned)}")
+        lines.append("")
+    if error_rows:
+        lines.append("### Catalog read errors")
+        for drift in error_rows:
+            lines.append(f"- `{drift.provider}`: {drift.error}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def github_annotations(drifts: Sequence[CatalogDrift], *, keyless_only: bool = False) -> list[str]:
+    """GitHub Actions workflow commands for the Actions log."""
+    notes: list[str] = []
+    if keyless_only:
+        notes.append(
+            "::warning title=Narrow audit coverage::"
+            "Only keyless presets were compared; add free-tier API key secrets to cover pinned lists"
+        )
+    for drift in drifts:
+        if drift.error is not None:
+            notes.append(f"::warning title=Catalog unread ({drift.provider})::{drift.error}")
+        for model_id in drift.missing:
+            notes.append(f"::error title=Pinned model gone ({drift.provider})::{model_id}")
+        for model_id in drift.unpinned:
+            notes.append(
+                f"::notice title=Unpinned catalog candidate ({drift.provider})::"
+                f"{model_id} (manual free/quality check before pinning)"
+            )
+    return notes
+
+
+def _emit_github_audit(drifts: Sequence[CatalogDrift], *, keyless_only: bool = False) -> None:
+    """When running in Actions, append a job summary and print workflow annotations to stderr."""
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with Path(summary).open("a", encoding="utf-8") as fh:
+            fh.write(audit_markdown(drifts, keyless_only=keyless_only))
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        for line in github_annotations(drifts, keyless_only=keyless_only):
+            print(line, file=sys.stderr)
 
 
 if __name__ == "__main__":

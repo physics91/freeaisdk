@@ -59,7 +59,16 @@ __all__ = [
 ResponseCheck = Callable[[ChatResponse], bool | str | None]
 
 # Model families that are listed by providers but cannot hold a conversation.
-DEFAULT_EXCLUDE: tuple[str, ...] = ("*content-safety*", "*guard*", "*whisper*", "*tts*", "*embed*")
+DEFAULT_EXCLUDE: tuple[str, ...] = (
+    "*content-safety*",
+    "*guard*",
+    "*whisper*",
+    "*tts*",
+    "*orpheus*",  # Groq TTS ids (canopylabs/orpheus-*) omit "tts"
+    "*embed*",
+    "*bge*",  # BAAI embedding ids (e.g. OVH bge-m3) omit "embed"
+    "*stable-diffusion*",  # image generators listed beside chat models
+)
 STRATEGIES: tuple[str, ...] = ("priority", "round_robin", "random", "health", "quota")
 
 

@@ -221,3 +221,79 @@ def test_async_audit_and_cli(clock, capsys, monkeypatch):
     assert "groq: 3 pinned, differs from the catalog" in out
     assert "no longer listed: openai/gpt-oss-20b, qwen/qwen3.8-27b" in out
     assert "listed but not pinned (not shown to be free): new/model-1" in out
+
+
+def test_audit_github_summary_and_annotations(clock, tmp_path, capsys, monkeypatch):
+    from freeai import __main__ as cli
+
+    live = ("openai/gpt-oss-120b", "new/model-1")
+    groq = Groq(api_key="k", http_client=_listing(*live))
+    summary = tmp_path / "summary.md"
+    monkeypatch.setattr(cli.FreeAI, "from_env", classmethod(lambda cls, **kwargs: FreeAI(groq, clock=clock)))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    assert cli.main(["audit"]) == 1
+    body = summary.read_text(encoding="utf-8")
+    assert "### Missing" in body
+    assert "`openai/gpt-oss-20b`" in body
+    assert "### Unpinned candidates" in body
+    assert "`new/model-1`" in body
+    assert "do not auto-route" in body
+    assert "### Providers compared" in body
+    assert "`groq`:" in body
+
+    captured = capsys.readouterr()
+    assert "::error title=Pinned model gone (groq)::openai/gpt-oss-20b" in captured.err
+    assert "::notice title=Unpinned catalog candidate (groq)::new/model-1" in captured.err
+    assert "::error" not in captured.out  # keep --json / stdout parseable
+
+
+def test_audit_json_stdout_stays_clean_under_github(clock, capsys, monkeypatch):
+    from freeai import OVH
+    from freeai import __main__ as cli
+
+    live = ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b")
+    groq = Groq(api_key="k", http_client=_listing(*live))
+    monkeypatch.setattr(cli.FreeAI, "from_env", classmethod(lambda cls, **kwargs: FreeAI(groq, clock=clock)))
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    assert cli.main(["audit", "--json"]) == 0
+    out = capsys.readouterr().out
+    payload = __import__("json").loads(out)
+    assert payload[0]["provider"] == "groq"
+
+    ovh = OVH(http_client=_listing(*OVH.default_models))
+    monkeypatch.setattr(cli.FreeAI, "from_env", classmethod(lambda cls, **kwargs: FreeAI(ovh, clock=clock)))
+    assert cli.main(["audit", "--json"]) == 0
+    captured = capsys.readouterr()
+    __import__("json").loads(captured.out)
+    assert "coverage: only keyless" in captured.err
+
+
+def test_audit_fail_on_catalog_error(clock, monkeypatch):
+    from freeai import __main__ as cli
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "nope"})
+
+    groq = Groq(api_key="k", http_client=httpx.Client(transport=httpx.MockTransport(refuse)))
+    monkeypatch.setattr(cli.FreeAI, "from_env", classmethod(lambda cls, **kwargs: FreeAI(groq, clock=clock)))
+    assert cli.main(["audit"]) == 0
+    assert cli.main(["audit", "--fail-on-catalog-error"]) == 1
+
+
+def test_audit_filters_non_chat_unpinned_candidates(clock):
+    live = (
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "bge-m3",
+        "stable-diffusion-xl-base-v10",
+        "canopylabs/orpheus-v1-english",
+        "new/model-1",
+    )
+    groq = Groq(api_key="k", http_client=_listing(*live))
+    (drift,) = FreeAI(groq, clock=clock).audit()
+    assert drift.missing == ()
+    assert drift.unpinned == ("new/model-1",)

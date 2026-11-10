@@ -249,13 +249,17 @@ answers = ai.batch(prompts, concurrency=8)   # 쿼터가 다시 찰 때까지 �
 무료인지, 쓸 만한지 알 수 없기 때문입니다. 2026-11-10에 돌려 보니 OVHcloud에 고정하지 않은 채팅 모델 3개가
 있었고, 익명 요청 하나씩으로 확인한 뒤 프리셋에 넣었습니다(모델 6개에서 9개, 분당 12회에서 18회). Groq의
 `allam-2-7b`는 영어 질문에 아랍어로 답해서 넣지 않았습니다. 사라진 고정 모델이 있으면 종료 코드가 1입니다.
+GitHub Actions 워크플로 `catalog-audit`가 매일(그리고 `workflow_dispatch`로) 같은 검사를 돌립니다. `missing`이거나
+(`--fail-on-catalog-error`) 카탈로그를 못 읽으면 실패하고, `unpinned`는 Job Summary와 notice로만 남겨 사람이
+확인한 뒤 핀합니다. 저장소 secrets에 넣은 무료 등급 키만 비교에 쓰이며, 키가 없으면 그 프리셋은 건너뜁니다
+(OVHcloud는 익명이라 항상 포함). 키가 하나도 없으면 커버리지 경고가 납니다.
 
 ## 주요 옵션
 
 | 옵션 | 기본값 | 설명 |
 |---|---|---|
 | `strategy` | `"quota"` | 쓴 몫이 가장 빨리 돌아오는 모델부터 씁니다. `"priority"`(공급자와 모델을 나열한 순서), `"round_robin"`, `"random"`, `"health"`(성공률과 지연의 지수 평균으로 두 후보 중 나은 쪽 선택) |
-| `prefer`, `exclude` | `()`, `DEFAULT_EXCLUDE` | 모델 패턴. 기본 제외는 `*guard*`, `*content-safety*`, `*whisper*`, `*tts*`, `*embed*` |
+| `prefer`, `exclude` | `()`, `DEFAULT_EXCLUDE` | 모델 패턴. 기본 제외는 `*guard*`, `*content-safety*`, `*whisper*`, `*tts*`, `*orpheus*`, `*embed*`, `*bge*`, `*stable-diffusion*` |
 | `model=` (호출별) | 없음 | id, glob, `provider:id`, 목록, 별칭 `fast`, `smart`, `coding`, `auto` |
 | `aliases` | 내장 별칭 | `{"mine": ["*qwen*"]}`. 별칭은 순서만 바꾸고 다른 모델을 막지 않습니다 |
 | `max_attempts`, `max_wait` | `8`, `30.0` | 호출당 최대 시도 수, 쉬는 모델을 기다릴 최대 초(`math.inf`면 끝까지). 둘 다 호출별로도 줄 수 있습니다 |
@@ -319,7 +323,7 @@ bearer 토큰이 없으면 시작하지 않습니다. 토큰은 상수 시간으
 ```bash
 freeai models --require tools        # 시도 순서대로 후보 출력
 freeai models --json                 # 후보 키와 문맥 길이를 JSON으로
-freeai audit                         # 고정 모델 목록을 플랫폼 카탈로그와 비교 (--json 가능)
+freeai audit                         # 고정 모델 목록을 플랫폼 카탈로그와 비교 (--json / --fail-on-catalog-error)
 freeai chat "질문" --model smart --stream
 freeai chat "질문" --system "짧게 답해" --max-tokens 256
 freeai --store ~/.cache/freeai.db chat "..."   # 다른 프로세스와 상태 공유
