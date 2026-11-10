@@ -1,5 +1,5 @@
 [project]
-name = "freeai"
+name = "freeaisdk"
 version = "0.1.0"
 description = "Chat with free LLMs (OpenRouter and OpenAI-compatible free tiers) with automatic model failover and 429 avoidance"
 readme = "README.md"
@@ -23,6 +23,12 @@ dependencies = [
     "httpx>=0.28.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/physics91/freeaisdk"
+Repository = "https://github.com/physics91/freeaisdk"
+Issues = "https://github.com/physics91/freeaisdk/issues"
+Changelog = "https://github.com/physics91/freeaisdk/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 otel = ["opentelemetry-api>=1.30"]
 
@@ -32,6 +38,10 @@ freeai = "freeai.__main__:main"
 [build-system]
 requires = ["uv_build>=0.9.28,<0.10.0"]  # match the installed uv; bump both together (uv 0.9 cannot unpack uv_build 0.13 sdists)
 build-backend = "uv_build"
+
+# Distribution name is freeaisdk; import package stays freeai (PyPI name collision).
+[tool.uv.build-backend]
+module-name = "freeai"
 
 [dependency-groups]
 dev = [

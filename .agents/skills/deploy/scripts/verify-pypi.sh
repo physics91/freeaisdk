@@ -12,5 +12,5 @@ test -n "$TAG"
 VERSION="${TAG#v}"
 gh release view "$TAG" >/dev/null
 # Smoke: package page / simple index eventually lists the version.
-curl -fsSL "https://pypi.org/pypi/freeai/${VERSION}/json" >/dev/null
-echo "PyPI lists freeai==${VERSION}"
+curl -fsSL "https://pypi.org/pypi/freeaisdk/${VERSION}/json" >/dev/null
+echo "PyPI lists freeaisdk==${VERSION}"
