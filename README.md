@@ -4,7 +4,7 @@
 > Install `free-llm-sdk` (not `freeai` / `freeaisdk`). Import `freeai`.  
 > Fast path: `from freeai import chat; print(chat("..."))` — no API key required.  
 > Or `FreeAI.from_env()`, or `freeai serve` → `http://127.0.0.1:8787/v1` (`max_retries=0`).  
-> Details: [`llms.txt`](./llms.txt) · [`docs/agent/guide.md`](./docs/agent/guide.md) · [consumer skill](./.agents/skills/freeai/SKILL.md)
+> Details: [`llms.txt`](./llms.txt) · [`docs/agent/guide.md`](./docs/agent/guide.md) · [consumer skill](./.agents/skills/freeai/SKILL.md) · [doc map](./docs/README.md)
 
 여러 플랫폼의 무료 LLM을 `chat()` 한 번으로 쓰는 Python SDK입니다. 대상은 OpenRouter, Groq, Gemini, Cloudflare, Z.ai 등 무료 등급이 있는 OpenAI 호환 플랫폼입니다.
 지금 쓸 수 있는 무료 모델을 고르고, 한도를 미리 세어 429를 피합니다. 실패하면 원인에 맞게 그 모델이나 플랫폼을 쉬게 하고 다음 후보로 넘어갑니다.
@@ -211,7 +211,7 @@ answers = ai.batch(prompts, concurrency=8)   # 쿼터가 다시 찰 때까지 �
 - 대가가 있습니다. 분당 몫만 있는 플랫폼은 느리거나(익명 OVHcloud) 프롬프트를 학습에 씁니다(NVIDIA, Kilo).
   Groq와 OVHcloud로 요청 8번을 보낸 실측(2026-11-10)에서 `priority`는 4건 모두 Groq가 0.3~0.6초에,
   `quota`는 4건 모두 OVHcloud가 0.6~3.5초에 답했습니다. 표본이 작은 수치이고 꼬리는 더 깁니다. 익명 OVHcloud에
-  94번 시도한 부하 측정(2026-11-06, `reports/샘플 채팅앱 부하 측정.md`)에서는 첫 토큰 p95가 7~16초, 답 전체 p95가
+  94번 시도한 부하 측정(2026-11-06, `docs/research/2026-11-06-chat-app-load-test/report.md`)에서는 첫 토큰 p95가 7~16초, 답 전체 p95가
   24~29초였고, 지금 OVHcloud의 첫 후보인 `Qwen3.8-27B`가 20초 안에 첫 토큰을 보내지 않은 적도 있습니다.
   속도가 중요하면 `prefer=["groq:*"]`처럼 빠른 플랫폼을 앞에 두거나, `deadline`을 걸거나, `include_keyless=False`로
   익명 엔드포인트를 빼세요. 학습이 문제면 `allow_training=False`를 함께 쓰세요.
@@ -387,12 +387,12 @@ instrument(ai)   # 시도마다 GenAI 규약 span 하나 (gen_ai.provider.name, 
   256에 약 50토큰 응답일 때 80~103이었고, 계산식은 모릅니다. 응답이 길면 qwen의 분당 처리량은 그만큼 줄어듭니다.
   이 한도는 qwen에서만 봤습니다. 공식 문서에 없는 값이라 Groq가 바꾸면 프리셋도 따라 바꿔야 합니다.
 - Groq 세 모델과 OVHcloud에 분당 120건을 3분 보낸 실측(`max_tokens` 256)에서, 2분째부터 모델별 성공은 gpt-oss가
-  분당 24~26건, qwen이 16~28건이고 Groq 429는 3분에 10번이었습니다(`reports/load-test/groq-rpm-refill-real.jsonl`).
+  분당 24~26건, qwen이 16~28건이고 Groq 429는 3분에 10번이었습니다(`docs/research/2026-11-06-chat-app-load-test/data/groq-rpm-refill-real.jsonl`).
   한도를 넘는 몫은 여전히 `ExhaustedError`로 끝납니다(같은 측정에서 356건 중 61건). 남은 429가 왜 생기는지는 확인하지
   못했습니다. 2.1초 간격에서 요청의 도착 시각이 0.1초 넘게 흔들린 경우로 추정합니다.
 - Groq 일일 요청은 86.4초보다 촘촘히 보내는 동안 다시 차지 않습니다(실측). 하루 1000건은 사실상 한 번 쓰면
   쉬는 시간에만 돌아오는 몫으로 보세요. 1000건을 실제로 다 쓴 상태는 확인하지 못했습니다. 회복 방식만
-  실측했고(`reports/load-test/groq-daily-refill-real.jsonl`), 다 쓴 뒤 86.4초 간격으로 보내는 동작은 단위 테스트로
+  실측했고(`docs/research/2026-11-06-chat-app-load-test/data/groq-daily-refill-real.jsonl`), 다 쓴 뒤 86.4초 간격으로 보내는 동작은 단위 테스트로
   확인했습니다.
 - OVHcloud의 분당 한도를 기다리면 최대 약 61초가 걸립니다. `max_wait`가 그보다 짧으면 기다리지 않고 다른
   모델로 넘어갑니다.

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation layout: research reports and load-test evidence live under
+  `docs/research/`, completed plans under `docs/archive/plans/`, with a doc map at
+  `docs/README.md`. Agent-facing `llms.txt`, `docs/agent/guide.md`, and the
+  consumer skill now share the same install/usage contract and link `SECURITY.md`.
+
 ### Added
 
 - Scheduled GitHub Actions workflow `catalog-audit`: runs `freeai audit --fail-on-catalog-error`

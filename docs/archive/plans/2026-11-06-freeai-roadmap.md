@@ -1,9 +1,10 @@
 <!-- regular-plan-v1 -->
+<!-- archived: P0–P2 complete; kept for history only -->
 # freeai 로드맵 구현 (P0 → P1 → P2)
 
 ## Goal
 
-`reports/무료 LLM SDK 개선 조사.md`의 로드맵 P0 9건, P1 8건, P2 4건을 순서대로 구현한다.
+`docs/research/2026-11-06-free-llm-sdk-improvements/report.md`의 로드맵 P0 9건, P1 8건, P2 4건을 순서대로 구현한다.
 각 단계가 끝날 때마다 테스트, ruff, mypy strict, 실제 네트워크 검사(키 없이 가능한 범위)를 통과시킨다.
 
 ## Scope

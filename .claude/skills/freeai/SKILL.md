@@ -41,10 +41,17 @@ print(chat("Answer in one sentence: what is GIL?"))
 ```python
 from freeai import FreeAI
 
-with FreeAI.from_env() as ai:  # or AsyncFreeAI.from_env()
-    r = ai.chat("hi", system="Be brief", max_wait=30, deadline=60)
+with FreeAI.from_env(
+    prefer=["groq:*"],       # optional: bias to a fast provider
+    include_keyless=False,   # optional: own keys only
+    max_wait=30,
+    deadline=60,
+) as ai:
+    r = ai.chat("hi", system="Be brief")
     print(r.text, r.provider, r.model)
 ```
+
+Async: `async with AsyncFreeAI.from_env() as ai: ...`
 
 Keys picked up when present (free tier only by default):
 
@@ -57,7 +64,7 @@ Keys picked up when present (free tier only by default):
 | Z.ai | `ZAI_API_KEY` |
 | SambaNova | `SAMBANOVA_API_KEY` |
 | NVIDIA | `NVIDIA_API_KEY` |
-| Kilo | `KILO_API_KEY` (or anonymous with `include_keyless=True`) |
+| Kilo | `KILO_API_KEY` (or anonymous when `include_keyless=True`) |
 | Requesty | `REQUESTY_API_KEY` |
 | OVHcloud | none (anonymous, on by default) |
 
@@ -85,9 +92,12 @@ client = OpenAI()  # wraps FreeAI.from_env()
 - Assume import name equals PyPI name
 - Enable trial/paid tiers by default
 - Log API keys or full prompts in agent traces
+- Retry aggressively on top of `freeai serve` (double retry / failover)
 
 ## More detail
 
+- Doc map: `docs/README.md`
 - Short guide: `docs/agent/guide.md`
 - Index: `/llms.txt`
 - Full human docs: `README.md`
+- Security: `SECURITY.md`

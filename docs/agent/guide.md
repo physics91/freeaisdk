@@ -6,6 +6,8 @@ Short contract for agents integrating **free-llm-sdk** (import/CLI: **freeai**).
 
 ```bash
 uv add free-llm-sdk
+# optional OpenTelemetry
+uv add "free-llm-sdk[otel]"
 ```
 
 ```python
@@ -14,7 +16,9 @@ from freeai import chat, FreeAI, AsyncFreeAI
 
 PyPI name ≠ import name. Never install `freeai` or `freeaisdk` from PyPI for this project.
 
-## Minimal usage
+## Prefer these paths (in order)
+
+### 1) One-liner
 
 ```python
 from freeai import chat
@@ -23,24 +27,23 @@ print(chat("Say hello in one short sentence."))
 
 No API key is required: anonymous OVHcloud is included by default. With keys in the environment, `chat()` / `FreeAI.from_env()` also use those free-tier presets.
 
-## Client options agents usually need
+### 2) Env-based client
 
 ```python
 from freeai import FreeAI
 
-ai = FreeAI.from_env(
+with FreeAI.from_env(
     prefer=["groq:*"],       # optional: bias to a fast provider
     include_keyless=False,   # optional: own keys only (no anonymous OVHcloud)
     max_wait=30,             # wait for quota / cooldown
     deadline=60,             # whole-call time budget
-)
-print(ai.chat("hi", system="Be brief").text)
-ai.close()
+) as ai:
+    print(ai.chat("hi", system="Be brief").text)
 ```
 
 Async: `async with AsyncFreeAI.from_env() as ai: ...`
 
-## OpenAI-compatible path
+### 3) OpenAI-compatible path
 
 ```bash
 freeai serve
@@ -51,7 +54,7 @@ Or in-process:
 
 ```python
 from freeai.compat import OpenAI
-client = OpenAI()
+client = OpenAI()  # wraps FreeAI.from_env()
 ```
 
 When using the proxy from another OpenAI SDK, set `max_retries=0`.
@@ -67,9 +70,9 @@ When using the proxy from another OpenAI SDK, set `max_retries=0`.
 | Z.ai | `ZAI_API_KEY` |
 | SambaNova | `SAMBANOVA_API_KEY` |
 | NVIDIA | `NVIDIA_API_KEY` |
-| Kilo | `KILO_API_KEY` |
+| Kilo | `KILO_API_KEY` (or anonymous when `include_keyless=True`) |
 | Requesty | `REQUESTY_API_KEY` |
-| OVHcloud | _(none)_ |
+| OVHcloud | _(none; anonymous, on by default)_ |
 
 Default `from_env()` only enables **free** tiers. Trial/paid need an explicit `tiers=...` and raise `BillingWarning`.
 
@@ -79,6 +82,7 @@ Default `from_env()` only enables **free** tiers. Trial/paid need an explicit `t
 2. Importing `free_llm_sdk` (wrong; import is `freeai`).
 3. Opening trial/paid tiers without user approval.
 4. Retrying aggressively on top of `freeai serve` (double retry / failover).
+5. Logging API keys or full prompts in agent traces.
 
 ## Copy this skill into another repo
 
@@ -90,3 +94,10 @@ curl -fsSL \
 ```
 
 Cursor users can place the same file under `.cursor/skills/freeai/SKILL.md` if that is the project skill root.
+
+## More detail
+
+- Doc map: `docs/README.md`
+- Index: `/llms.txt`
+- Full human docs: `README.md`
+- Security: `SECURITY.md`
