@@ -87,9 +87,7 @@ class TransportMixin:
         with self._client_lock:
             ahttp = self._ahttp
             if ahttp is None:
-                ahttp = AsyncClient(
-                    timeout=self._default_timeout(), limits=CONNECTION_LIMITS, follow_redirects=False
-                )
+                ahttp = AsyncClient(timeout=self._default_timeout(), limits=CONNECTION_LIMITS, follow_redirects=False)
                 self._ahttp = ahttp
             return ahttp
 
