@@ -387,9 +387,10 @@ def test_from_env_enables_only_free_tiers(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "g")
     monkeypatch.setenv("CEREBRAS_API_KEY", "c")
     monkeypatch.setenv("MISTRAL_API_KEY", "m")
-    assert [p.name for p in FreeAI.from_env().providers] == ["groq"]
+    assert [p.name for p in FreeAI.from_env(include_keyless=False).providers] == ["groq"]
+    assert [p.name for p in FreeAI.from_env().providers] == ["groq", "ovh"]  # plus the anonymous free endpoints
     with pytest.warns(BillingWarning):
-        everything = FreeAI.from_env(tiers=("free", "trial", "paid"))
+        everything = FreeAI.from_env(tiers=("free", "trial", "paid"), include_keyless=False)
     assert [p.name for p in everything.providers] == ["groq", "cerebras", "mistral"]
 
 

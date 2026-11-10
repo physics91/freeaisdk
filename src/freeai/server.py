@@ -8,6 +8,10 @@ reach it can use those keys. It binds to loopback by default and refuses any oth
 a bearer token is set (compared in constant time). Clients never send provider keys; key strings
 are redacted from error bodies. Request bodies are capped at 16 MiB. Configure OpenAI SDK clients
 with ``max_retries=0``: the proxy already fails over, and its 429 means every free model is busy.
+
+A waiting request holds a handler thread, so how long requests may wait for quota is decided by
+whoever starts the proxy (``freeai --max-wait``). A request body can ask for a shorter wait with
+``max_wait`` but never for a longer one.
 """
 
 from __future__ import annotations
@@ -111,6 +115,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "stream must be a boolean", "invalid_request_error", "invalid_stream")
             return
         try:
+            self._bound_wait(body)
             if stream:
                 self._stream(messages, model, body)
             else:
@@ -125,6 +130,25 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, str(exc), "invalid_request_error", "invalid_parameter")
         except FreeAIError as exc:
             self._error(502, str(exc), "server_error", "upstream_error")
+
+    def _bound_wait(self, body: dict[str, Any]) -> None:
+        """Keep a client from waiting longer for quota than the proxy was started to allow.
+
+        The body's keywords go to :meth:`FreeAI.chat`, ``max_wait`` among them. A client may lower
+        it (0 fails fast) but not raise it: a waiting request occupies a thread of this server.
+        """
+        if "max_wait" not in body:
+            return
+        wait = body["max_wait"]
+        if isinstance(wait, bool) or not isinstance(wait, (int, float)):
+            raise ValueError("max_wait must be a number of seconds")
+        try:
+            seconds = float(wait)
+        except OverflowError:  # an integer with hundreds of digits
+            seconds = math.inf
+        if math.isnan(seconds):
+            raise ValueError("max_wait must be a number of seconds")
+        body["max_wait"] = min(max(0.0, seconds), self.server.ai.max_wait)
 
     def _stream(self, messages: list[Any], model: str | None, params: dict[str, Any]) -> None:
         chunks = self.server.ai.stream(messages, model=parse_model(model), **params)

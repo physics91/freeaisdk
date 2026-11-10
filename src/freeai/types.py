@@ -53,6 +53,25 @@ class ModelInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogDrift:
+    """How a provider's pinned model list differs from what the platform lists right now.
+
+    ``unpinned`` models are only listed by the platform: a catalog without prices cannot show that
+    the free plan may use them, so they are reported and never used on their own.
+    """
+
+    provider: str
+    pinned: tuple[str, ...]
+    missing: tuple[str, ...] = ()  # pinned, but the platform no longer lists them
+    unpinned: tuple[str, ...] = ()  # listed by the platform, but not pinned
+    error: str | None = None  # the catalog could not be read
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.missing or self.unpinned)
+
+
+@dataclass(frozen=True, slots=True)
 class Attempt:
     """One request sent to one model, successful or not."""
 

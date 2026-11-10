@@ -57,6 +57,13 @@ EDGE_MARGIN = 1.0
 # or it can land just short of one. Unlike EDGE_MARGIN this is lost on every request at the limit, so
 # it stays small: on Groq, requests 2.1 s apart got no 429s through the SDK (measured 2026-11-09).
 WHOLE_MARGIN = 0.1
+# A reading that came back with request R counts everything the platform accepted before R. A
+# request reserved this many seconds before R was has reached the platform by then, so its
+# reservation is not added on top of that reading a second time. The bound is how long a request
+# can take to arrive: connecting (the provider clients give up after 5 s) plus EDGE_MARGIN for the
+# rest. A client of your own with a longer connect timeout, or a pool so small that requests queue
+# for a connection, can exceed it; the reading is then one request short until that request answers.
+ACCEPT_MARGIN = 6.0
 _PENDING_PREFIX = "p:"  # reservations the platform has not accepted yet, keyed by quota key
 
 
@@ -76,6 +83,12 @@ class Limit:
     the last request it accepted, and drops the remainder when it accepts the next one. Such a window
     stays empty under steady traffic instead of catching up after a late request: Groq's 30 per
     minute lets requests through only when they are 2 s apart, and regains none during a burst.
+
+    ``estimate`` marks a number that is a guess (a third-party table, a forum post) for a window the
+    platform never reports. With ``adapt_limits=True`` the SDK finds the real size of estimated
+    requests per day or month by itself: it sends one request more when the window is full and
+    raises the number when that is accepted, and lowers it when the platform reports the allowance
+    exhausted although the window had room (see :mod:`freeai._adapt`).
     """
 
     amount: float
@@ -86,6 +99,7 @@ class Limit:
     source: str | None = None
     last_verified: str | None = None
     whole: bool = False
+    estimate: bool = False
 
     def __post_init__(self) -> None:
         if self.whole and self.per not in _WINDOW_SECONDS:
@@ -189,6 +203,71 @@ def quota_ready_at(
     return ready
 
 
+def quota_refill(
+    tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str
+) -> float:
+    """Seconds the platform needs to give back what ``cost`` uses; the scarcest window decides.
+
+    This is what a request costs in quota terms, and ``strategy="quota"`` spends the cheapest first.
+    A rolling window refills at ``amount / period``, so a request costs its share of the period:
+    1.5 s at 40 per minute, 86.4 s at 1000 per day. A fixed window gives nothing back before it
+    resets, so a request costs its share of the time left, measured against what is left: 1728 s
+    of a fresh 50 per day, the whole remaining time for the last one, and next to nothing for what
+    is still unspent shortly before the reset, because that would be lost anyway.
+    """
+    refill = 0.0
+    for limit in limits:
+        amount = cost.of(limit.unit)
+        if amount > 0 and math.isfinite(amount) and limit.applies_to(model_id):
+            refill = max(refill, _window_refill(limit, tx.get(limit.key(provider, model_id)), amount, now, tz))
+    return refill
+
+
+def quota_used(tx: State, limit: Limit, provider: str, model_id: str, now: float, tz: str) -> float:
+    """How much of the window is taken by the local count, in the limit's unit."""
+    state = _usable_quota_state(tx.get(limit.key(provider, model_id)))
+    capacity = _capacity(limit, state)
+    if capacity <= 0:
+        return 0.0
+    if _whole(limit, state):
+        row = _whole_row(state)
+        return 0.0 if row is None else max(0.0, capacity - row[0])
+    if _rolling(limit.per, state):
+        tat = _quota_number(state.get("tat")) if state else None
+        if tat is None or tat <= now:
+            return 0.0
+        return min(capacity, (tat - now) * capacity / _WINDOW_SECONDS[limit.per])
+    return _used_in_period(limit, state, now, tz)
+
+
+def quota_started(tx: State, limit: Limit, provider: str, model_id: str, now: float, tz: str) -> float:
+    """Since when the window's local count has been running without a break.
+
+    A rolling window starts over when it is whole again, a fixed one when its period begins. What
+    was charged before that no longer weighs on the count, so a mistake made before it (a request
+    the platform refused but that stays charged here) is gone.
+    """
+    state = _usable_quota_state(tx.get(limit.key(provider, model_id)))
+    if _whole(limit, state):
+        row = _whole_row(state)
+        return now if row is None or row[0] >= _capacity(limit, state) else 0.0
+    if _rolling(limit.per, state):
+        tat = _quota_number(state.get("tat")) if state else None
+        if tat is None or tat <= now:
+            return now
+        return _quota_number(state.get("since")) or 0.0 if state else 0.0
+    if limit.per in _ROLLING_BY_DEFAULT:
+        return 0.0  # a fixed minute or hour is a platform's reading, which is not adapted
+    moment = datetime.fromtimestamp(now, _zone(tz))
+    first = moment.date() if limit.per == "day" else moment.date().replace(day=1)
+    return datetime.combine(first, datetime.min.time(), tzinfo=_zone(tz)).timestamp()
+
+
+def horizon_seconds(per: Window, now: float, tz: str) -> float:
+    """What a request costs against an allowance of unknown size: at worst the rest of its window."""
+    return _WINDOW_SECONDS[per] if per in _ROLLING_BY_DEFAULT else seconds_until(per, now, tz)
+
+
 def quota_charge(
     tx: State, limits: list[Limit], provider: str, model_id: str, cost: Cost, now: float, tz: str
 ) -> list[tuple[str, float]]:
@@ -213,13 +292,34 @@ def quota_adjust(
             tx[key] = _window_add(limit, tx.get(key), delta, now, tz)
 
 
-def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapshot, now: float, tz: str) -> Limit:
+def quota_observe(
+    tx: State,
+    provider: str,
+    model_id: str,
+    snapshot: RateSnapshot,
+    now: float,
+    tz: str,
+    sent_at: float | None = None,
+) -> Limit:
     """Replace local counters with what the platform reported; returns the learned limit.
 
     A snapshot counts the requests the platform had accepted when it answered. Requests sent but not
     accepted yet (no response headers back, see :func:`pending_add`) are added on top so their
     reservations are not wiped out; these live in the store, so every process sharing it sees them.
     Otherwise the server's count wins, which also settles over-estimated token reservations.
+
+    ``sent_at`` is when the request this reading came back with was reserved. The platform accepted
+    it after everything reserved :data:`ACCEPT_MARGIN` earlier, so the reading already counts those
+    and their reservations are left out: a request that is still being answered is then counted
+    once, not twice. Without ``sent_at`` (a quota endpoint) every reservation is added.
+
+    Readings can also arrive in another order than they were taken: the headers of an answer that
+    is not streamed come with its body but hold the count from when the request was accepted
+    (measured on Groq, 2026-11-10). For tokens, a reading whose request was sent before the request
+    of the reading already applied (``asof``) is therefore the older one and is ignored: taking it
+    would forget what later requests used. Its own reservation, if the applied reading had added
+    it, stays counted until the next reading, which errs on the safe side. Request counts never go
+    down, so they are told apart by the count itself (below).
 
     Concurrent responses can be handled in another order than the platform counted them. Platforms
     never hand requests back, so a request count read lower than one already applied is a late
@@ -232,12 +332,23 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
     if not math.isfinite(snapshot.limit) or snapshot.limit <= 0:
         return limit
     key = limit.key(provider, model_id)
+    old = _quota_state(tx.get(key))  # what the last reading (and later charges) left
+    stamp: dict[str, Any] = {}
+    if sent_at is not None:
+        asof = _quota_number(old.get("asof")) if old else None
+        if asof is not None and asof > now:
+            asof = None  # the wall clock was set back: that reading is not from the future
+        if asof is not None and sent_at < asof:
+            if limit.unit != "requests":
+                return limit  # taken before the reading that is already applied
+            stamp["asof"] = asof  # keep the later time; reservations are still judged by this reading's own
+        else:
+            stamp["asof"] = sent_at
     if snapshot.whole:
-        tx[key] = {"tokens": max(0.0, snapshot.remaining), "last": now, "amount": snapshot.limit}
+        tx[key] = {"tokens": max(0.0, snapshot.remaining), "last": now, "amount": snapshot.limit, "srv": 1, **stamp}
         return limit
     seen = max(0.0, snapshot.limit - snapshot.remaining)
     requests = limit.unit == "requests"
-    old = _quota_state(tx.get(key))  # what the last reading (and later charges) left
     rolling = limit.per in _ROLLING_BY_DEFAULT if snapshot.rolling is None else snapshot.rolling
     if limit.per in _ROLLING_BY_DEFAULT and snapshot.reset_in is None:
         rolling = True  # a fixed minute or hour window is no use without knowing when it ends
@@ -248,8 +359,8 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
         if requests and old_served is not None:
             # Platforms never hand requests back, even when the reported limit amount changes.
             served = max(served, old_served)
-        tat = served + _pending_total(tx, key, now) * interval
-        state: dict[str, Any] = {"tat": tat, "amount": snapshot.limit, "since": now}
+        tat = served + _pending_total(tx, key, now, sent_at) * interval
+        state: dict[str, Any] = {"tat": tat, "amount": snapshot.limit, "srv": 1, "since": now, **stamp}
         if requests:
             state["served"] = served
     else:
@@ -272,11 +383,12 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
                 old_until = _quota_number(old.get("until"))
                 if old_until is not None:
                     until = max(until, old_until)
-        state = {"used": seen + _pending_total(tx, key, now), "seen": seen, "amount": snapshot.limit}
+        state = {"used": seen + _pending_total(tx, key, now, sent_at), "seen": seen, "amount": snapshot.limit, "srv": 1}
         if period is not None:
             state["period"] = period
         if until is not None:
             state["until"] = until
+        state.update(stamp)
     tx[key] = state
     return limit
 
@@ -284,6 +396,36 @@ def quota_observe(tx: State, provider: str, model_id: str, snapshot: RateSnapsho
 def _quota_state(value: Any) -> dict[str, Any] | None:
     """Quota counter row from the store; non-dict values are treated as missing."""
     return value if isinstance(value, dict) else None
+
+
+def _reported(state: dict[str, Any] | None) -> float | None:
+    """The window's size as the platform last reported it (:func:`quota_observe`), if it did.
+
+    Only a platform's reading is kept in a row (``amount``, marked ``srv``). A size copied from the
+    declared limit would outlive a change of that limit, because rows of rolling windows never
+    expire; rows written that way by older versions are read as not reported.
+    """
+    if not state or not state.get("srv"):
+        return None
+    return _quota_number(state.get("amount"))
+
+
+def _capacity(limit: Limit, state: dict[str, Any] | None) -> float:
+    """The window's size: what the platform reported, else what the limit declares."""
+    reported = _reported(state)
+    return limit.amount if reported is None else reported
+
+
+def _size(state: dict[str, Any] | None) -> dict[str, Any]:
+    """What a reading left that the row a charge rewrites must keep: the reported size and its time.
+
+    Nothing for a window the platform has not reported.
+    """
+    reported = _reported(state)
+    if reported is None or state is None:
+        return {}
+    asof = _quota_number(state.get("asof"))
+    return {"amount": reported, "srv": 1} if asof is None else {"amount": reported, "srv": 1, "asof": asof}
 
 
 def _finite_float(value: Any) -> float | None:
@@ -332,11 +474,21 @@ def _pending_entries(tx: State, key: str) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-def pending_add(tx: State, reservation: str, charges: Iterable[tuple[str, float]], expires_at: float) -> None:
-    """Record charges of a request the platform has not accepted yet (until ``expires_at``)."""
+def pending_add(
+    tx: State,
+    reservation: str,
+    charges: Iterable[tuple[str, float]],
+    expires_at: float,
+    sent_at: float | None = None,
+) -> None:
+    """Record charges of a request the platform has not accepted yet (until ``expires_at``).
+
+    ``sent_at`` is when the request was reserved, which lets a later reading tell that it already
+    counts this request (see :func:`quota_observe`).
+    """
     for key, amount in charges:
         entries = _pending_entries(tx, key)
-        entries[reservation] = [amount, expires_at]
+        entries[reservation] = [amount, expires_at] if sent_at is None else [amount, expires_at, sent_at]
         tx[_PENDING_PREFIX + key] = entries
 
 
@@ -353,7 +505,11 @@ def pending_drop(tx: State, reservation: str, keys: Iterable[str]) -> None:
 
 
 def _pending_row(entry: Any) -> list[float] | None:
-    """``[amount, expires_at]`` from the store; skip truncated or non-numeric rows."""
+    """``[amount, expires_at]`` or ``[amount, expires_at, sent_at]`` from the store.
+
+    Truncated or non-numeric rows are skipped; a ``sent_at`` that is not a number is dropped, which
+    reads the row like one of an older version (always added to a reading).
+    """
     if not isinstance(entry, (list, tuple)) or len(entry) < 2:
         return None
     try:
@@ -362,10 +518,12 @@ def _pending_row(entry: Any) -> list[float] | None:
         return None
     if not math.isfinite(amount) or not math.isfinite(expires):
         return None
-    return [amount, expires]
+    sent = _finite_float(entry[2]) if len(entry) > 2 else None
+    return [amount, expires] if sent is None else [amount, expires, sent]
 
 
-def _pending_total(tx: State, key: str, now: float) -> float:
+def _pending_total(tx: State, key: str, now: float, reading_sent_at: float | None = None) -> float:
+    """Reservations to add to a reading: all that are alive, or those the reading cannot contain yet."""
     store_key = _PENDING_PREFIX + key
     raw = tx.get(store_key)
     entries = dict(raw) if isinstance(raw, dict) else {}
@@ -380,13 +538,17 @@ def _pending_total(tx: State, key: str, now: float) -> float:
             tx[store_key] = live
         elif store_key in tx:
             del tx[store_key]
-    return sum(max(0.0, amount) for amount, _expires in live.values())
+    counted = None if reading_sent_at is None else reading_sent_at - ACCEPT_MARGIN
+    return sum(
+        max(0.0, row[0])
+        for row in live.values()
+        if counted is None or len(row) < 3 or row[2] > counted  # reserved too late to be in the reading
+    )
 
 
 def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) -> float:
     state = _usable_quota_state(state)
-    capacity_n = _quota_number(state.get("amount")) if state else None
-    capacity = limit.amount if capacity_n is None else capacity_n
+    capacity = _capacity(limit, state)
     if capacity <= 0:
         return math.inf  # no allowance; never ready for a positive charge
     if _whole(limit, state):
@@ -411,35 +573,52 @@ def _window_ready(limit: Limit, state: Any, amount: float, now: float, tz: str) 
     return until + EDGE_MARGIN if until is not None else _next_boundary(limit.per, now, tz)
 
 
+def _window_refill(limit: Limit, state: Any, amount: float, now: float, tz: str) -> float:
+    state = _usable_quota_state(state)
+    capacity = _capacity(limit, state)
+    if capacity <= 0:
+        return math.inf
+    if _whole(limit, state) or _rolling(limit.per, state):
+        return amount * _WINDOW_SECONDS[limit.per] / capacity
+    left = capacity - _used_in_period(limit, state, now, tz)
+    if left <= 0:
+        return math.inf
+    until = _window_end(limit.per, state, now)
+    if until is None:
+        calendar = limit.per not in _ROLLING_BY_DEFAULT
+        until = _next_boundary(limit.per, now, tz) if calendar else now + _WINDOW_SECONDS[limit.per]
+    return amount * max(0.0, until - now) / left
+
+
 def _window_add(limit: Limit, state: Any, amount: float, now: float, tz: str) -> dict[str, Any]:
     state = _usable_quota_state(state)
-    capacity_n = _quota_number(state.get("amount")) if state else None
-    capacity = limit.amount if capacity_n is None else capacity_n
+    capacity = _capacity(limit, state)
+    size = _size(state)
     if capacity <= 0:
         if _rolling(limit.per, state):
-            return {"tat": math.inf, "amount": capacity, "since": now}
-        added_zero: dict[str, Any] = {"used": max(0.0, amount), "amount": capacity}
+            return {"tat": math.inf, **size, "since": now}
+        added_zero: dict[str, Any] = {"used": max(0.0, amount), **size}
         if limit.per not in _ROLLING_BY_DEFAULT:
             added_zero["period"] = _period(limit.per, now, tz)
         return added_zero
     if _whole(limit, state):
-        return _whole_add(state, capacity, _WINDOW_SECONDS[limit.per] / capacity, amount, now)
+        return {**_whole_add(state, capacity, _WINDOW_SECONDS[limit.per] / capacity, amount, now), **size}
     if _rolling(limit.per, state):
         interval = _WINDOW_SECONDS[limit.per] / capacity
         tat_n = _quota_number(state.get("tat")) if state else None
         tat = now if tat_n is None else tat_n
         if tat <= now:  # whole: refilling starts with this charge
-            return {"tat": max(now, now + amount * interval), "amount": capacity, "since": now}
+            return {"tat": max(now, now + amount * interval), **size, "since": now}
         since = _quota_number(state.get("since")) if state else None
         if since is None:
             since = now
-        added_tat: dict[str, Any] = {"tat": max(now, tat + amount * interval), "amount": capacity, "since": since}
+        added_tat: dict[str, Any] = {"tat": max(now, tat + amount * interval), **size, "since": since}
         served = _quota_number(state.get("served"))
         if served is not None:
             added_tat["served"] = served  # the platform's count, if it reported one
         return added_tat
     used = _used_in_period(limit, state, now, tz)
-    added: dict[str, Any] = {"used": max(0.0, used + amount), "amount": capacity}
+    added: dict[str, Any] = {"used": max(0.0, used + amount), **size}
     if state and _in_window(limit, state, now, tz):
         seen = _quota_number(state.get("seen"))
         if seen is not None:
@@ -481,9 +660,9 @@ def _whole_add(
 ) -> dict[str, Any]:
     tokens, last = _whole_row(state) or (capacity, now)
     if amount < 0:  # a refund: the platform never saw this request, so its clock did not move
-        return {"tokens": min(capacity, tokens - amount), "last": last, "amount": capacity}
+        return {"tokens": min(capacity, tokens - amount), "last": last}
     back = max(0, math.floor((now - last - WHOLE_MARGIN) / interval))
-    return {"tokens": max(0.0, min(capacity, tokens + back) - amount), "last": now, "amount": capacity}
+    return {"tokens": max(0.0, min(capacity, tokens + back) - amount), "last": now}
 
 
 def _usable_quota_state(value: Any) -> dict[str, Any] | None:

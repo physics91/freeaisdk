@@ -11,10 +11,15 @@ from .types import Requirements
 
 
 class Reservation(NamedTuple):
-    """Quota charges of one request the platform has not accepted yet, as recorded in the store."""
+    """Quota charges of one request the platform has not accepted yet, as recorded in the store.
+
+    ``probed`` names the estimated windows this request was sent beyond, each with the size it had
+    then (see :mod:`freeai._adapt`).
+    """
 
     id: str
     keys: tuple[str, ...]
+    probed: tuple[tuple[str, float], ...] = ()
 
 
 _NO_RESERVATION = Reservation("", ())

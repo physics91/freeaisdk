@@ -83,6 +83,25 @@ class OrderPolicy:
             ordered.extend(self._arrange(groups[key], turn))
         return ordered
 
+    def tiers(self, request: _OrderRequest, ordered: Sequence[ModelInfo]) -> dict[str, int] | None:
+        """The static group of each candidate, for ``strategy="quota"`` (None for the others).
+
+        Groups are what ``prefer``, an explicit ``model`` and routers-last decide. Quota-aware
+        selection only chooses inside the first group that has a ready candidate.
+        """
+        if self.strategy != "quota":
+            return None
+        patterns = request.models or request.prefer or self.prefer
+        tiers: dict[str, int] = {}
+        last: tuple[bool, int] | None = None
+        index = -1
+        for model in ordered:
+            group = (model.is_router, _rank(model, patterns))
+            if group != last:
+                index, last = index + 1, group
+            tiers[model.key] = index
+        return tiers
+
     def _privacy_ok(self, model: ModelInfo) -> bool:
         if self.allow_training:
             return True

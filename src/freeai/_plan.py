@@ -6,6 +6,7 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from . import _adapt
 from ._http import logger
 from ._routing_types import (
     _MAX_BAD_REQUESTS_PER_PROVIDER,
@@ -27,7 +28,8 @@ from .errors import (
     ProviderFailure,
     Scope,
 )
-from .limits import RateSnapshot, pending_drop, quota_adjust
+from .limits import Cost, RateSnapshot, State, pending_drop, quota_adjust, quota_started, quota_used
+from .providers import Provider
 from .types import Attempt, ModelInfo
 
 if TYPE_CHECKING:
@@ -50,11 +52,22 @@ class Plan:
     """Attempt bookkeeping for one request: which candidate next, when to wait, when to give up."""
 
     def __init__(
-        self, router: Router, request: Request, ordered: list[ModelInfo], limit: int, deadline_at: float | None
+        self,
+        router: Router,
+        request: Request,
+        ordered: list[ModelInfo],
+        limit: int,
+        deadline_at: float | None,
+        *,
+        tiers: Mapping[str, int] | None = None,
+        max_wait: float | None = None,
     ) -> None:
         self.router = router
         self.request = request
         self.ordered = ordered
+        self.tiers = tiers  # static groups, when the strategy chooses inside a group by quota
+        # Seconds this request may spend waiting for quota or cooldowns (inf: as long as it takes).
+        self.max_wait = router.max_wait if max_wait is None else max(0.0, max_wait)
         self.limit = limit
         self.deadline_at = deadline_at
         self.attempts: list[Attempt] = []
@@ -68,6 +81,8 @@ class Plan:
         self._reservation = _NO_RESERVATION
         self._admitted: list[RateSnapshot] = []  # headers of the active attempt, applied on arrival
         self._accepted = False  # True after :meth:`admitted` (platform accepted this attempt)
+        self._probed: tuple[tuple[str, float], ...] = ()  # estimated windows the active attempt goes beyond
+        self._sent_at: float | None = None  # when the active attempt was reserved
 
     @property
     def providers(self) -> set[str]:
@@ -95,14 +110,15 @@ class Plan:
         ]
         if not remaining:
             raise ExhaustedError("every candidate model failed", self.attempts)
-        model, ready_at, reservation = router.reserve(remaining, self.request)
+        model, ready_at, reservation = router.reserve(remaining, self.request, self.tiers)
         if model is not None:
             self._active, self._reservation, self._admitted, self._accepted = model, reservation, [], False
+            self._probed, self._sent_at = reservation.probed, ready_at
             return model
         delay = max(0.0, ready_at - now)
         if math.isinf(delay):
             raise ExhaustedError("every candidate provider is disabled; check the API keys", self.attempts)
-        allowance = self.router.max_wait - self._waited
+        allowance = self.max_wait - self._waited
         if self.deadline_at is not None:
             allowance = min(allowance, self.deadline_at - now)
         if delay > allowance:
@@ -138,7 +154,7 @@ class Plan:
             # Drop pending before observe so header readings are not double-counted with the reserve.
             if reservation.keys:
                 pending_drop(tx, reservation.id, reservation.keys)
-            router._observe_tx(tx, model.provider, model.id, snapshots)
+            router._observe_tx(tx, model.provider, model.id, snapshots, self._sent_at)
         router.changed()
 
     def release(self, model: ModelInfo) -> None:
@@ -147,10 +163,11 @@ class Plan:
         If the platform never accepted the attempt (pending reservation still held), undo the local
         quota charge. After :meth:`admitted`, the platform counted the request so charges stay.
         """
-        detached, reservation = self._detach(model)
+        detached, reservation, probed = self._detach(model)
+        router = self.router
+        router._release_probes(probed)
         if not detached:
             return
-        router = self.router
         if reservation.keys:
             provider = router.provider(model)
             sid = provider.state_id
@@ -168,13 +185,70 @@ class Plan:
                     quota_adjust(tx, limits, sid, model.id, "requests", -cost.requests, now, provider.reset_tz)
         router.changed()
 
-    def _detach(self, model: ModelInfo) -> tuple[bool, Reservation]:
-        """Clear the active attempt and concurrency slot; return any reservation still to drop."""
+    def _detach(self, model: ModelInfo) -> tuple[bool, Reservation, tuple[tuple[str, float], ...]]:
+        """Clear the active attempt and concurrency slot.
+
+        Returns any reservation still to drop and the estimated windows the attempt probed. Those
+        stay marked as being probed until the caller has recorded the outcome and calls
+        ``router._release_probes``, so no second probe starts in between.
+        """
         if self._active is None or self._active.key != model.key:
-            return False, _NO_RESERVATION
+            return False, _NO_RESERVATION, ()
         reservation, self._active, self._reservation = self._reservation, None, _NO_RESERVATION
+        probed, self._probed, self._sent_at = self._probed, (), None
         self.router._release_slot(model)
-        return True, reservation
+        return True, reservation, probed
+
+    def _refused(
+        self,
+        tx: State,
+        provider: Provider,
+        model: ModelInfo,
+        failure: ProviderFailure,
+        probed: tuple[tuple[str, float], ...],
+        covered: set[tuple[str, str]],
+        cost: Cost,
+        now: float,
+    ) -> None:
+        """What a failed request says about daily and monthly limits declared as estimates.
+
+        Any failure leaves a request charged that the platform may not have counted, so the window's
+        count is not trusted for a probe until its next period has begun. Beyond that: if the
+        request was sent beyond an estimate and the platform refused it for lack of allowance, however
+        it words that, the probe was refused and the next one waits (a probe that failed another way,
+        such as a 500, was not). Otherwise, if the platform reports its allowance exhausted, the
+        fullest of these windows is smaller than assumed and is cut to what it held, provided that
+        count is one of accepted requests only (nothing that failed earlier is still in it).
+
+        Call before the failed request's own charges are settled.
+        """
+        sid, tz = provider.state_id, provider.reset_tz
+        beyond = {key for key, _ in probed}
+        soft = [
+            (limit, limit.key(sid, model.id))
+            for limit in self.router._limits(tx, provider, model.id)
+            if _adapt.adapts(limit) and (limit.per, limit.unit) not in covered
+        ]
+        exact = {
+            key
+            for limit, key in soft
+            if _adapt.unsure_since(tx, key) < quota_started(tx, limit, sid, model.id, now, tz)
+        }
+        refused = failure.kind in _adapt.REFUSALS
+        for limit, key in soft:
+            if key in beyond and refused:
+                _adapt.refuse_probe(tx, limit, key, now)
+            else:
+                _adapt.distrust(tx, limit, key, now)
+        if beyond or failure.kind is not FailureKind.QUOTA_EXHAUSTED:
+            return  # explained by the probe, or not about a day's or a month's allowance
+        fullest: tuple[float, Any, str, float] | None = None
+        for limit, key in soft:
+            accepted = max(0.0, quota_used(tx, limit, sid, model.id, now, tz) - cost.requests)
+            if key in exact and accepted < limit.amount and (fullest is None or accepted / limit.amount > fullest[0]):
+                fullest = (accepted / limit.amount, limit, key, accepted)
+        if fullest is not None:
+            _adapt.cut(tx, fullest[1], fullest[2], now, fullest[3])
 
     def failed(
         self,
@@ -190,7 +264,8 @@ class Plan:
         ``usage`` is the response's token usage when the server answered (empty, rejected or
         truncated output); those tokens were spent, so they are settled instead of refunded.
         """
-        _, reservation = self._detach(model)
+        sent_at = self._sent_at
+        _, reservation, probed = self._detach(model)
         router = self.router
         provider = router.provider(model)
         sid = provider.state_id
@@ -214,6 +289,8 @@ class Plan:
                 # Requests: stay charged once the platform may have counted them; undo only when the
                 # attempt never reached the platform (transport failure before any HTTP response).
                 cost = router.cost(provider, self.request)
+                if router.adapt_limits and failure.reached and cost.requests:
+                    self._refused(tx, provider, model, failure, probed, covered, cost, now)
                 delta = _settlement(_total_tokens(usage), cost.tokens, self._accepted)
                 output_delta = _settlement(_output_tokens(usage), cost.output_tokens, self._accepted)
                 limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
@@ -221,7 +298,7 @@ class Plan:
                 quota_adjust(tx, limits, sid, model.id, "output_tokens", output_delta, now, provider.reset_tz)
                 if not failure.reached and reservation.keys and cost.requests:
                     quota_adjust(tx, limits, sid, model.id, "requests", -cost.requests, now, provider.reset_tz)
-                router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots])
+                router._observe_tx(tx, provider.name, model.id, [*failure.snapshots, *snapshots], sent_at)
                 if failure.scope is not Scope.REQUEST:
                     router.health.record(model.key, False, now - started)
                 if failure.kind is FailureKind.UNAVAILABLE and router.retry_budget is not None:
@@ -232,6 +309,8 @@ class Plan:
             if reservation.keys and not committed:
                 router._drop_pending(reservation)
             raise
+        finally:
+            router._release_probes(probed)
         router.changed()
         if failure.kind is FailureKind.MODEL_GONE:
             provider.invalidate()
@@ -266,7 +345,8 @@ class Plan:
         usage: Mapping[str, Any] | None = None,
         served_model: str | None = None,
     ) -> None:
-        _, reservation = self._detach(model)
+        sent_at = self._sent_at
+        _, reservation, probed = self._detach(model)
         router = self.router
         provider = router.provider(model)
         sid = provider.state_id
@@ -285,9 +365,14 @@ class Plan:
                 delta = _settlement(_total_tokens(usage), cost.tokens, True)
                 output_delta = _settlement(_output_tokens(usage), cost.output_tokens, True)
                 limits = [lim for lim in router._limits(tx, provider, model.id) if (lim.per, lim.unit) not in covered]
+                sizes = dict(probed)
+                for limit in limits:  # a request sent beyond an estimated window was accepted
+                    key = limit.key(sid, model.id)
+                    if limit.estimate and key in sizes:
+                        _adapt.grow(tx, limit, key, sizes[key])
                 quota_adjust(tx, limits, sid, model.id, "tokens", delta, now, provider.reset_tz)
                 quota_adjust(tx, limits, sid, model.id, "output_tokens", output_delta, now, provider.reset_tz)
-                router._observe_tx(tx, provider.name, model.id, snapshots)
+                router._observe_tx(tx, provider.name, model.id, snapshots, sent_at)
                 latency = now - started
                 router.health.record(model.key, True, latency)
                 if model.is_router and served_model and served_model != model.id:
@@ -299,6 +384,8 @@ class Plan:
             if reservation.keys and not committed:
                 router._drop_pending(reservation)
             raise
+        finally:
+            router._release_probes(probed)
         router.changed()
         self._emit(
             Attempt(

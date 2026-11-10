@@ -4,6 +4,7 @@ import asyncio
 import json
 import socket
 import threading
+import time
 
 import httpx
 import pytest
@@ -17,7 +18,7 @@ from freeai.otel import attempt_attributes
 from freeai.server import MAX_BODY_BYTES, ProxyServer
 from freeai.types import Attempt, ChatResponse
 
-from .conftest import FakeServer, delta, error, ok, sse
+from .conftest import ALPHA_MODELS, FakeServer, delta, error, ok, sse
 
 ALPHA, BETA = "alpha/one:free", "beta/two:free"
 
@@ -219,6 +220,38 @@ def test_proxy_maps_exhaustion_to_429_with_retry_after(proxy, server):
     assert [a["kind"] for a in body["x_freeai"]["attempts"]] == [FailureKind.RATE_LIMIT] * 4
 
 
+def test_proxy_lets_a_client_shorten_the_wait_but_not_extend_it(proxy, make_ai, server):
+    for model in ALPHA_MODELS:
+        server.on(model, error(429, "busy", headers={"Retry-After": "120"}, provider_name="X"))
+    messages = [{"role": "user", "content": "hi"}]
+    url = proxy(make_ai(max_wait=0.0)).url  # this proxy never waits
+    started = time.monotonic()
+    reply = httpx.post(f"{url}/chat/completions", json={"messages": messages, "max_wait": 3600}, timeout=20)
+    assert reply.status_code == 429  # at once, although the client asked to wait an hour
+    assert time.monotonic() - started < 5
+    reply = httpx.post(f"{url}/chat/completions", json={"messages": messages, "max_wait": "long"}, timeout=20)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (400, "invalid_parameter")
+    for wait in ("1" + "0" * 400, "Infinity", "1e400", "-5"):  # however it is spelled, it is no longer than the proxy's
+        body = '{"messages": [{"role": "user", "content": "hi"}], "max_wait": ' + wait + "}"
+        reply = httpx.post(
+            f"{url}/chat/completions", content=body, headers={"Content-Type": "application/json"}, timeout=20
+        )
+        assert reply.status_code == 429, wait
+    reply = httpx.post(
+        f"{url}/chat/completions", json={"messages": messages, "max_wait": 3600, "stream": True}, timeout=20
+    )
+    assert reply.status_code == 429  # streaming requests are bounded the same way
+
+    patient = FakeServer()
+    waiting = FreeAI(plain(patient, ["m1"]), max_wait=300.0)
+    patient.on("m1", error(429, "busy", headers={"Retry-After": "120"}))
+    url = proxy(waiting).url
+    started = time.monotonic()
+    reply = httpx.post(f"{url}/chat/completions", json={"messages": messages, "max_wait": 0}, timeout=20)
+    assert reply.status_code == 429  # the client did not want to wait the 120 s this proxy would have
+    assert time.monotonic() - started < 5
+
+
 def test_proxy_request_validation(proxy, monkeypatch):
     url = proxy().url
     assert httpx.post(f"{url}/chat/completions", json={"messages": []}).status_code == 400
@@ -334,8 +367,11 @@ def test_cli_errors_without_network(monkeypatch, capsys):
     for preset in PRESETS.values():
         for name in preset.env:
             monkeypatch.delenv(name, raising=False)
-    assert main(["models"]) == 2
+    assert main(["--no-keyless", "models"]) == 2
     assert "no provider API key" in capsys.readouterr().err
+    assert main(["models"]) == 0  # without any key: OVHcloud's anonymous endpoints, which do not train
+    listed = capsys.readouterr().out.split()
+    assert listed and all(key.startswith("ovh:") for key in listed)
     monkeypatch.setenv("GROQ_API_KEY", "g")
     assert main(["serve", "--host", "0.0.0.0", "--port", "0"]) == 2  # no token: refused before binding
     assert "without a token" in capsys.readouterr().err

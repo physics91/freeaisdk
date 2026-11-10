@@ -62,11 +62,17 @@ class Gemini(Provider):
     reset_headers = ()
     default_models = GEMINI_FREE_MODELS
     default_limits = (
-        rpm(5, models=_GEMINI_FLASH, source=_GEMINI_SOURCE, last_verified=_VERIFIED),
-        rpd(20, models=_GEMINI_FLASH, source=_GEMINI_SOURCE, last_verified=_VERIFIED),
-        rpm(10, models=_GEMINI_FLASH_LITE, source=_GEMINI_SOURCE, last_verified=_VERIFIED),
-        rpd(500, models=_GEMINI_FLASH_LITE, source=_GEMINI_SOURCE, last_verified=_VERIFIED),
-        tpm(250_000, models=(*_GEMINI_FLASH, *_GEMINI_FLASH_LITE), source=_GEMINI_SOURCE, last_verified=_VERIFIED),
+        rpm(5, models=_GEMINI_FLASH, source=_GEMINI_SOURCE, last_verified=_VERIFIED, estimate=True),
+        rpd(20, models=_GEMINI_FLASH, source=_GEMINI_SOURCE, last_verified=_VERIFIED, estimate=True),
+        rpm(10, models=_GEMINI_FLASH_LITE, source=_GEMINI_SOURCE, last_verified=_VERIFIED, estimate=True),
+        rpd(500, models=_GEMINI_FLASH_LITE, source=_GEMINI_SOURCE, last_verified=_VERIFIED, estimate=True),
+        tpm(
+            250_000,
+            models=(*_GEMINI_FLASH, *_GEMINI_FLASH_LITE),
+            source=_GEMINI_SOURCE,
+            last_verified=_VERIFIED,
+            estimate=True,
+        ),
     )
 
     def __init__(

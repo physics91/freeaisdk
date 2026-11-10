@@ -50,8 +50,19 @@ class Observe:
             for provider_name, model_id, snaps in batches:
                 self.apply_tx(tx, provider_name, model_id, snaps)
 
-    def apply_tx(self, tx: State, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]) -> None:
-        """Apply ``snapshots`` into an open transaction. Caller must hold ``_lock``; no nested lock."""
+    def apply_tx(
+        self,
+        tx: State,
+        provider_name: str,
+        model_id: str,
+        snapshots: Iterable[RateSnapshot],
+        sent_at: float | None = None,
+    ) -> None:
+        """Apply ``snapshots`` into an open transaction. Caller must hold ``_lock``; no nested lock.
+
+        ``sent_at`` is when the request the snapshots came back with was reserved (see
+        :func:`~freeai.limits.quota_observe`); None for readings of a quota endpoint.
+        """
         snapshots = list(snapshots)
         if not snapshots:
             return
@@ -70,7 +81,7 @@ class Observe:
         for snapshot in snapshots:
             if isinstance(snapshot.limit, bool) or not math.isfinite(snapshot.limit) or snapshot.limit <= 0:
                 continue
-            quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz)
+            quota_observe(tx, sid, model_id, snapshot, now, provider.reset_tz, sent_at)
             entry = {
                 "per": snapshot.per,
                 "unit": snapshot.unit,

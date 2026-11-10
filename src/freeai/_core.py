@@ -37,7 +37,7 @@ from .retry import RetryBudget
 from .state import MemoryStore, StateStore
 from .types import Attempt, ChatResponse, ModelInfo
 
-Strategy = Literal["priority", "round_robin", "random", "health"]
+Strategy = Literal["priority", "round_robin", "random", "health", "quota"]
 
 # Re-export for existing ``from freeai._core import …`` call sites.
 __all__ = [
@@ -60,7 +60,7 @@ ResponseCheck = Callable[[ChatResponse], bool | str | None]
 
 # Model families that are listed by providers but cannot hold a conversation.
 DEFAULT_EXCLUDE: tuple[str, ...] = ("*content-safety*", "*guard*", "*whisper*", "*tts*", "*embed*")
-STRATEGIES: tuple[str, ...] = ("priority", "round_robin", "random", "health")
+STRATEGIES: tuple[str, ...] = ("priority", "round_robin", "random", "health", "quota")
 
 
 class RouterOptions(TypedDict, total=False):
@@ -76,6 +76,7 @@ class RouterOptions(TypedDict, total=False):
     first_token_timeout: float | None
     retry_on_empty: bool
     allow_training: bool
+    adapt_limits: bool
     reject_response: ResponseCheck | None
     cooldowns: CooldownPolicy | None
     retry_budget: RetryBudget | bool
@@ -100,13 +101,14 @@ class Router:
         prefer: Sequence[str] = (),
         exclude: Sequence[str] = DEFAULT_EXCLUDE,
         aliases: Mapping[str, Sequence[str]] | None = None,
-        strategy: Strategy = "priority",
+        strategy: Strategy = "quota",
         max_attempts: int = 8,
         max_wait: float = 30.0,
         deadline: float | None = None,
         first_token_timeout: float | None = None,
         retry_on_empty: bool = True,
         allow_training: bool = True,
+        adapt_limits: bool = True,
         reject_response: ResponseCheck | None = None,
         cooldowns: CooldownPolicy | None = None,
         retry_budget: RetryBudget | bool = True,
@@ -140,6 +142,7 @@ class Router:
         self.first_token_timeout = first_token_timeout
         self.retry_on_empty = retry_on_empty
         self.allow_training = allow_training
+        self.adapt_limits = adapt_limits
         self.reject_response = reject_response
         self.policy = cooldowns or CooldownPolicy()
         if isinstance(retry_budget, RetryBudget):
@@ -181,6 +184,7 @@ class Router:
             probing=self._probing,
             clock=self.clock,
             cost=self.cost,
+            adapt=adapt_limits,
         )
         self._observe = Observe(
             lock=self._lock,
@@ -226,7 +230,13 @@ class Router:
         return self._order.order(request, pools, turn=turn)
 
     def plan(
-        self, request: Request, ordered: list[ModelInfo], *, max_attempts: int | None, deadline: float | None
+        self,
+        request: Request,
+        ordered: list[ModelInfo],
+        *,
+        max_attempts: int | None,
+        deadline: float | None,
+        max_wait: float | None = None,
     ) -> Plan:
         if not ordered:
             privacy = "" if self.allow_training else "; allow_training=False"
@@ -235,7 +245,9 @@ class Router:
             )
         budget = deadline if deadline is not None else self.deadline
         deadline_at = None if budget is None else self.clock() + budget
-        return Plan(self, request, ordered, max_attempts or self.max_attempts, deadline_at)
+        tiers = self._order.tiers(request, ordered)
+        attempts = max_attempts or self.max_attempts
+        return Plan(self, request, ordered, attempts, deadline_at, tiers=tiers, max_wait=max_wait)
 
     def claim_warmups(self, names: Iterable[str]) -> list[Provider]:
         """Providers whose one-time quota sync has not run yet (each is returned once)."""
@@ -257,9 +269,16 @@ class Router:
         """Apply several snapshot batches in one store transaction (empty batches are skipped)."""
         self._observe.observe_many(items)
 
-    def _observe_tx(self, tx: State, provider_name: str, model_id: str, snapshots: Iterable[RateSnapshot]) -> None:
+    def _observe_tx(
+        self,
+        tx: State,
+        provider_name: str,
+        model_id: str,
+        snapshots: Iterable[RateSnapshot],
+        sent_at: float | None = None,
+    ) -> None:
         """Apply ``snapshots`` into an open transaction. Caller must hold ``_lock``; no nested lock."""
-        self._observe.apply_tx(tx, provider_name, model_id, snapshots)
+        self._observe.apply_tx(tx, provider_name, model_id, snapshots, sent_at)
 
     def status(self) -> dict[str, dict[str, float]]:
         """Remaining cooldown seconds per model key and per provider."""
@@ -279,13 +298,17 @@ class Router:
         # Apply even when the estimate is 0 (e.g. ``max_tokens=0``); Groq still burns template tokens.
         return Cost(cost.requests, cost.tokens + overhead, cost.output_tokens + reserve)
 
-    def reserve(self, candidates: list[ModelInfo], request: Request) -> tuple[ModelInfo | None, float, Reservation]:
-        """Pick the first candidate that is ready now and charge its quota windows.
+    def reserve(
+        self, candidates: list[ModelInfo], request: Request, tiers: Mapping[str, int] | None = None
+    ) -> tuple[ModelInfo | None, float, Reservation]:
+        """Pick a candidate that is ready now and charge its quota windows.
 
-        Returns the model (or None), when it was or will be ready, and the reservation to hand to
-        :meth:`Plan.admitted` or :meth:`release`.
+        That is the first ready one, or with ``tiers`` (``strategy="quota"``) the one of the first
+        group with a ready candidate whose quota comes back soonest. Returns the model (or None),
+        when it was or will be ready, and the reservation to hand to :meth:`Plan.admitted` or
+        :meth:`release`.
         """
-        return self._admission.reserve(candidates, request)
+        return self._admission.reserve(candidates, request, tiers)
 
     def _limits(
         self,
@@ -302,9 +325,13 @@ class Router:
         if self.on_change is not None:
             self.on_change()
 
-    def _release_slot(self, model: ModelInfo) -> None:
+    def _release_slot(self, model: ModelInfo, probed: tuple[tuple[str, float], ...] = ()) -> None:
         """Free concurrency/probe bookkeeping only. Caller owns any ``pending_drop``."""
-        self._admission.release_slot(model)
+        self._admission.release_slot(model, probed)
+
+    def _release_probes(self, probed: tuple[tuple[str, float], ...]) -> None:
+        """The outcome of a probe of estimated windows is recorded: let the next one be sent."""
+        self._admission.release_probes(probed)
 
     def _drop_pending(self, reservation: Reservation) -> None:
         self._admission.drop_pending(reservation)
